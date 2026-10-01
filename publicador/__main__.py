@@ -133,7 +133,7 @@ def conectar_tiktok(args) -> int:
 def descubrir_meta(args) -> int:
     import requests
     cfg = cargar()
-    token = S.crear().leer("meta")
+    token = S.crear().leer(args.secreto)
     r = requests.get(f"https://graph.facebook.com/{cfg.graph_version}/me/accounts", timeout=30,
                      headers={"Authorization": f"OAuth {token}"},
                      params={"fields": "name,id,instagram_business_account{id,username}", "limit": 100}).json()
@@ -197,7 +197,7 @@ def main(argv=None) -> int:
     t = sub.add_parser("conectar-tiktok")
     t.add_argument("nombre", help="ej. tiktok-bambu")
     t.set_defaults(fn=conectar_tiktok)
-    sub.add_parser("descubrir-meta").set_defaults(fn=descubrir_meta)
+    m = sub.add_parser("descubrir-meta"); m.add_argument("secreto", nargs="?", default="meta-valto"); m.set_defaults(fn=descubrir_meta)
     s = sub.add_parser("subir-a-github")
     s.add_argument("--forzar", action="store_true", help="sube también los tokens de TikTok aunque ya existan")
     s.set_defaults(fn=subir_a_github)
