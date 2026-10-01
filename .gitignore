@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+.secretos/
+credenciales/*.json
+config.toml
+.publicador.lock

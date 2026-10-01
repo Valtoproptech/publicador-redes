@@ -1,0 +1,34 @@
+# Copia este archivo como config.toml y complétalo. Aquí NO van tokens (esos van en secretos).
+# En GitHub este archivo viaja como secret (PUBLICADOR_CONFIG_TOML), no queda público.
+
+zona_horaria = "America/Lima"
+anticipacion_minutos = 45    # el sistema toma cada publicación hasta 45 min antes y espera la hora exacta
+graph_version = "v25.0"      # versión de la API de Meta
+
+[notion]
+contenidos = "eedaa6edd82d4d538831fc4d47178bac"
+publicaciones = "259cade026084145b59da541f2438a5a"
+
+# Una sección por cuenta (marca). El nombre debe ser IGUAL a la opción "Cuenta" en Notion.
+# `python -m publicador descubrir-meta` imprime los page_id / ig_user_id listos para pegar.
+
+[cuentas."Bambú".instagram]
+via = "nativo"
+ig_user_id = ""
+secreto = "meta-bambu"       # token del usuario del sistema del portafolio de Meta que tiene esta cuenta
+
+[cuentas."Bambú".facebook]
+via = "nativo"
+page_id = ""
+
+[cuentas."Bambú".tiktok]
+via = "nativo"               # app propia de TikTok: llega a tus borradores (gratis)
+secreto = "tiktok-bambu"     # creado con: python -m publicador conectar-tiktok tiktok-bambu
+
+[cuentas."Bambú".youtube]
+via = "nativo"
+secreto = "youtube-bambu"    # creado con: python -m publicador conectar-google youtube-bambu --para youtube
+# Mientras Google no apruebe la auditoría de YouTube (videos quedan privados), alternativa gratis
+# de 10 videos/mes sin tarjeta:
+# via = "uploadpost"
+# perfil = "bambu"

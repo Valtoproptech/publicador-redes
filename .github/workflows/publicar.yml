@@ -1,0 +1,47 @@
+name: Publicar
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"      # GitHub puede atrasarlo; por eso el sistema toma las publicaciones con 45 min de anticipación y espera la hora exacta
+  workflow_dispatch: {}        # botón "Run workflow" para correrlo a mano
+
+concurrency:
+  group: publicador            # nunca dos ejecuciones a la vez (anti-duplicados)
+  cancel-in-progress: false
+
+permissions:
+  contents: write              # para guardar tokens renovados (cifrados) y el "keepalive"
+
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Instalar dependencias
+        run: |
+          command -v ffprobe >/dev/null || (sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg)
+          pip install -q -r requirements.txt
+      - name: Publicar
+        env:
+          PUBLICADOR_CLAVE: ${{ secrets.PUBLICADOR_CLAVE }}
+          PUBLICADOR_CONFIG_TOML: ${{ secrets.PUBLICADOR_CONFIG_TOML }}
+          PUBLICADOR_LOG: minimo   # los registros de un repo público son visibles: sin títulos ni textos
+        run: python -m publicador ejecutar
+      - name: Guardar tokens renovados y mantener vivo el programador
+        if: always()
+        run: |
+          git config user.name "publicador-bot"
+          git config user.email "publicador-bot@users.noreply.github.com"
+          if [ -n "$(git status --porcelain estado/)" ]; then
+            git add estado/ && git commit -q -m "estado: tokens renovados"
+          fi
+          # GitHub apaga los cron de repos públicos tras 60 días sin actividad: un commit vacío cada 45 días lo evita
+          if [ $(( $(date +%s) - $(git log -1 --format=%ct) )) -gt $((45 * 86400)) ]; then
+            git commit -q --allow-empty -m "keepalive"
+          fi
+          git push -q || true

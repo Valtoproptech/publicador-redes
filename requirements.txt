@@ -1,0 +1,5 @@
+requests>=2.32
+google-api-python-client>=2.140
+google-auth>=2.34
+google-auth-oauthlib>=1.2
+cryptography>=43
