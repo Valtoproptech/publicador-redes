@@ -22,6 +22,8 @@ from pathlib import Path
 from . import secretos as S
 from .config import cargar
 
+OPCIONALES = {"TITULO_YT"}  # columnas que pueden no existir en Notion
+
 
 def _notion_y_drive(sec):
     from .drive import Drive
@@ -72,7 +74,7 @@ def verificar(args) -> int:
 
     def base(id_, clase):
         props = notion.base(id_)["properties"]
-        faltan = [v for k, v in vars(clase).items() if not k.startswith("_") and v not in props]
+        faltan = [v for k, v in vars(clase).items() if not k.startswith("_") and k not in OPCIONALES and v not in props]
         if faltan:
             raise ValueError(f"faltan propiedades: {', '.join(faltan)}")
         return "estructura correcta"

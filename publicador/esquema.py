@@ -11,7 +11,7 @@ class C:
     PORTADA = "Portada"
     COPY = "Copy"
     HASHTAGS = "Hashtags"
-    TITULO_YT = "Título YouTube"
+    TITULO_YT = "Título YouTube"  # opcional (YouTube no se usa); `verificar` no la exige
     COLAB_IG = "Colaboradores IG"
     RESULTADO = "Resultado"
     ERROR = "Error"
