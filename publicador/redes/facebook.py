@@ -4,12 +4,13 @@ Ambos admiten programación nativa: el video queda subido y Facebook lo publica 
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
 
-from ..errores import ErrorPermanente
+from ..errores import ErrorPermanente, ResultadoIncierto
 from ..http import llamar
 from ..reglas import P_PROGRAMADO, P_PUBLICADO
 from ..secretos import enmascarar
@@ -110,6 +111,49 @@ class Facebook(Adaptador):
         except Exception as e:
             return f"Portada no aplicada en Facebook ({e})."
 
+    # ------------------------------------------------------------ fotos y carruseles
+
+    def programar_fotos(self, t, album, guardar_id) -> Resultado:
+        return self._post_fotos(t, album, guardar_id, esperar=None)
+
+    def publicar_fotos(self, t, album, esperar, guardar_id) -> Resultado:
+        return self._post_fotos(t, album, guardar_id, esperar=esperar)
+
+    def _post_fotos(self, t: Trabajo, album, guardar_id, esperar) -> Resultado:
+        """Cada foto se sube sin publicar (invisible) y luego un solo post las reúne (1 a 10 fotos)."""
+        programado = esperar is None
+        ids = []
+        for i, foto in enumerate(album.fotos, 1):
+            datos = {"published": "false"} | ({"temporary": "true"} if programado else {})
+            with open(foto.ruta, "rb") as f:
+                r = llamar(self.s, "POST", f"{self.g}/{self.page}/photos", data=datos, files={"source": f},
+                           headers=self.h, contexto=f"Facebook: subir foto {i}", timeout=(20, 300)).json()
+            ids.append(r["id"])
+        # A partir de aquí podría quedar publicado: si se corta, recuperar() lo manda a revisión humana.
+        guardar_id("fotos:" + ",".join(ids))
+        datos = {"message": t.texto}
+        datos |= {f"attached_media[{i}]": json.dumps({"media_fbid": fid}) for i, fid in enumerate(ids)}
+        if programado:
+            datos |= {"published": "false", "scheduled_publish_time": int(t.cuando.timestamp())}
+        else:
+            esperar()
+        post = llamar(self.s, "POST", f"{self.g}/{self.page}/feed", data=datos, headers=self.h, final=True,
+                      contexto="Facebook: " + ("programar post de fotos" if programado else "publicar post de fotos")
+                      ).json()["id"]
+        url = f"https://www.facebook.com/{post}"
+        if programado:
+            return Resultado(P_PROGRAMADO, post, url)
+        return Resultado(P_PUBLICADO, post, url, datetime.now(timezone.utc))
+
+    @staticmethod
+    def _es_post(objeto_id: str | None) -> bool:
+        """Los posts de página tienen ID 'página_post'; los videos y Reels, un número solo."""
+        return "_" in (objeto_id or "")
+
+    def _estado_post(self, post_id: str) -> dict:
+        return llamar(self.s, "GET", f"{self.g}/{post_id}", contexto="Facebook: estado del post",
+                      params={"fields": "is_published,permalink_url"}, headers=self.h).json()
+
     # ------------------------------------------------------------ seguimiento
 
     def _estado(self, video_id: str) -> dict:
@@ -121,6 +165,12 @@ class Facebook(Adaptador):
         return enlace if enlace.startswith("http") else "https://www.facebook.com" + enlace
 
     def verificar(self, t: Trabajo) -> Resultado | None:
+        if self._es_post(t.id_publicacion):
+            e = self._estado_post(t.id_publicacion)
+            if e.get("is_published"):
+                return Resultado(P_PUBLICADO, t.id_publicacion, e.get("permalink_url") or
+                                 f"https://www.facebook.com/{t.id_publicacion}", datetime.now(timezone.utc))
+            return None
         e = self._estado(t.id_publicacion)
         if (e.get("status") or {}).get("video_status") == "error":
             raise ErrorPermanente("Facebook marcó el video con error al procesarlo.")
@@ -131,6 +181,9 @@ class Facebook(Adaptador):
     def recuperar(self, t: Trabajo) -> Resultado | str:
         if not t.id_subida:
             return REINTENTAR
+        if t.id_subida.startswith("fotos:"):
+            raise ResultadoIncierto("Una ejecución se cortó justo al crear el post de fotos en Facebook. "
+                                    "Revisa la página (y sus publicaciones programadas) antes de reintentar.")
         e = self._estado(t.id_subida)
         if e.get("published"):
             return Resultado(P_PUBLICADO, t.id_subida, self._url(e, t.id_subida), datetime.now(timezone.utc),

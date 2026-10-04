@@ -65,6 +65,22 @@ def id_de_drive(url: str | None) -> str:
     raise ErrorValidacion("La URL no es un enlace de archivo de Google Drive (drive.google.com/file/d/...).")
 
 
+_CARPETA = re.compile(r"drive\.google\.com/(?:drive/(?:u/\d+/)?)?folders/([A-Za-z0-9_-]{10,})")
+
+
+def enlace_drive(url: str | None) -> tuple[str, bool]:
+    """(ID, es_carpeta). Una carpeta de Drive es un carrusel de fotos; un archivo, un video o una foto."""
+    m = _CARPETA.search(url or "")
+    if m:
+        return m.group(1), True
+    return id_de_drive(url), False
+
+
+def orden_natural(nombre: str) -> list:
+    """'2.jpg' antes que '10.jpg': así se ordenan las fotos de un carrusel."""
+    return [int(x) if x.isdigit() else x for x in re.split(r"(\d+)", nombre.casefold())]
+
+
 def parsear_fecha(valor: str | None, zona: str) -> datetime:
     """Convierte la fecha de Notion en un datetime con zona horaria. Exige hora."""
     if not valor:
@@ -187,6 +203,63 @@ def diagnosticar(info: InfoVideo, red: str) -> Diagnostico:
         d.solo_contenedor.append(f"contenedor {info.formato} (se pasa a MP4 sin recomprimir)")
     elif not info.moov_al_inicio:
         d.solo_contenedor.append("índice MP4 al final (se reordena sin recomprimir)")
+    return d
+
+
+# ---------------------------------------------------------------- Fotos y carruseles
+
+REDES_FOTOS = ("Instagram", "Facebook")   # TikTok y YouTube no admiten fotos por API con apps gratis
+MAX_FOTOS = 10                            # máximo de Instagram (y de este sistema) por carrusel
+MIB = 1024 * 1024
+FORMATOS_FOTO = {"image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"}
+LIMITES_FOTO = {
+    # Instagram solo acepta JPEG por URL pública (8 MB); la URL la da Notion, que en el plan gratis
+    # acepta hasta 5 MiB por archivo. Proporción: de 4:5 (vertical) a 1.91:1 (horizontal).
+    "Instagram": dict(formatos={"JPEG"}, peso_max=5 * MIB, proporcion=(0.8, 1.91)),
+    # Facebook recibe el archivo directo; JPEG y PNG sin conversión.
+    "Facebook": dict(formatos={"JPEG", "PNG"}, peso_max=10 * MB),
+}
+
+
+@dataclass
+class InfoFoto:
+    formato: str            # PIL: "JPEG", "PNG", "WEBP", "HEIF"...
+    ancho: int              # ya corregido por la orientación EXIF (lo que se ve)
+    alto: int
+    peso: int
+    orientacion: int = 1    # etiqueta EXIF 274; distinta de 1 = la imagen se gira al mostrarse
+    modo: str = "RGB"
+
+    def resumen(self) -> str:
+        return f"{self.ancho}x{self.alto} {self.formato} {self.peso / 1e6:.1f}MB"
+
+
+def proporcion_fuera(ancho: int, alto: int, red: str) -> str | None:
+    """Motivo si la proporción no la admite la red (se valida con los metadatos de Drive, sin descargar)."""
+    rango = LIMITES_FOTO.get(red, {}).get("proporcion")
+    if not rango or not alto:
+        return None
+    p = ancho / alto
+    if rango[0] - 0.005 <= p <= rango[1] + 0.005:
+        return None
+    return (f"mide {ancho}x{alto} y {red} solo acepta fotos entre 4:5 (vertical, ej. 1080x1350) y 1.91:1 "
+            "(horizontal). Expórtala en esa proporción")
+
+
+def diagnosticar_foto(info: InfoFoto, red: str) -> Diagnostico:
+    """fatal = no se puede publicar así; arreglable = se convierte a JPEG de alta calidad."""
+    lim, d = LIMITES_FOTO[red], Diagnostico()
+    motivo = proporcion_fuera(info.ancho, info.alto, red)
+    if motivo:
+        d.fatal.append(motivo)
+    if info.formato not in lim["formatos"]:
+        d.arreglable.append(f"formato {info.formato}")
+    if info.peso > lim["peso_max"]:
+        d.arreglable.append(f"peso {info.peso / 1e6:.1f} MB")
+    if info.orientacion not in (0, 1):
+        d.arreglable.append("rotación EXIF")
+    if info.modo not in ("RGB", "L") and info.formato == "JPEG":
+        d.arreglable.append(f"color {info.modo}")
     return d
 
 

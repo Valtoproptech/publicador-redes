@@ -55,6 +55,15 @@ class Adaptador:
         """Prepara todo lo posible, llama a esperar() justo antes del paso final y publica."""
         raise NotImplementedError
 
+    # ------------------------------------------------------------ fotos y carruseles (1 a 10 fotos)
+    fotos_por_url = False      # True = la red descarga cada foto desde una URL pública (Instagram)
+
+    def programar_fotos(self, t: Trabajo, album, guardar_id: GuardarId) -> Resultado:
+        raise ErrorPermanente(f"{t.red} no admite programar fotos desde aquí.")
+
+    def publicar_fotos(self, t: Trabajo, album, esperar: Esperar, guardar_id: GuardarId) -> Resultado:
+        raise ErrorPermanente(f"{t.red} no admite fotos ni carruseles en este sistema. Quítala de 'Redes'.")
+
     def verificar(self, t: Trabajo) -> Resultado | None:
         """Tras la hora programada: ¿ya está público? None = aún no."""
         return None

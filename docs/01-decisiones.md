@@ -1,7 +1,7 @@
 # Decisiones de arquitectura
 
 Registro para mantener y ampliar el sistema. Las decisiones nuevas se agregan al final; las viejas no se borran.
-Última revisión: 2026-09-29.
+Última revisión: 2026-10-04.
 
 ## Resumen en una línea
 Notion (qué y cuándo) → GitHub Actions cada 5 min → descarga el **original** de Drive → lo sube por la **API oficial** de cada red → escribe el resultado en Notion. **Costo: 0.**
@@ -34,7 +34,8 @@ Notion ⚙️ Publicaciones ◄── estado, ID, URL, error, detalle técnico (
 | D10 | **Anti-duplicados en 5 capas** | 1) Una ejecución a la vez. 2) La fila pasa a *Subiendo* y se relee antes de tocar la red. 3) Con *ID publicación* jamás se republica. 4) IDs intermedios guardados al instante + conciliación tras cortes. 5) Si hay duda → *Requiere revisión*, nunca un reintento ciego | — |
 | D11 | **Portada: la imagen se sube directo en Notion** | Notion entrega una URL temporal que Instagram acepta; no hace falta ningún almacenamiento extra | Guardarla en Cloud Storage (de pago) |
 | D12 | **Mantener vivo el cron** | GitHub apaga los cron de repos públicos tras 60 días sin actividad; el workflow hace un commit vacío cada 45 días. Los tokens de TikTok que se renuevan se guardan cifrados con un commit | — |
-| D13 | **Columna "Formato" en Contenidos** (Video / Foto / Carrusel / Texto) | Ayuda visual para ordenar el planner. Se elige **a mano**; el motor **no la lee** ni cambia nada al publicar (sigue siendo solo video). Es opcional: `verificar` no la exige | Detectarla automáticamente; usarla para decidir cómo se publica |
+| D13 | **Columna "Formato" en Contenidos** (Video / Foto / Carrusel / Texto) | Ayuda visual para ordenar el planner. Se elige **a mano**; el motor **no la lee** ni cambia nada al publicar (lo que decide es el enlace, ver D14). Es opcional: `verificar` no la exige | Detectarla automáticamente; usarla para decidir cómo se publica |
+| D14 | **Fotos y carruseles: la URL apunta a una carpeta de Drive** (o a una sola imagen). 1 foto = post de foto, 2–10 = carrusel, en orden por nombre (`1, 2, … 10`). Solo Instagram y Facebook | Instagram **solo** acepta fotos por URL pública: el sistema sube cada foto al cuerpo de la fila de *Publicaciones* en Notion (API de archivos, gratis, máx. 5 MiB por archivo en el plan gratis) y le pasa a Instagram esa URL temporal (1 h). Facebook recibe el archivo directo y programa de forma nativa. Original intacto salvo que la red lo exija (PNG/WEBP/HEIC → JPEG en Instagram). La proporción nunca se recorta: si no cabe, error claro. Se valida al marcar *Listo* con los metadatos de Drive, sin descargar | Repo público o GitHub Pages (las fotos quedarían públicas antes de tiempo); hacer pública la carpeta de Drive (cambia permisos y Drive no da un enlace directo fiable); fotos no publicadas de Facebook como URL para Instagram (recomprime). TikTok exige un dominio verificado propio para fotos y YouTube no tiene API de fotos |
 
 ## Tipos de error (qué hace el sistema con cada uno)
 | Tipo | Ejemplo | Resultado |
@@ -45,7 +46,7 @@ Notion ⚙️ Publicaciones ◄── estado, ID, URL, error, detalle técnico (
 | Incierto | Sin respuesta en la llamada que publica | **Requiere revisión**. Nunca se reintenta solo |
 
 ## Límites conocidos (v1)
-- Solo video vertical u horizontal (Reels, Shorts, TikTok). Carruseles y fotos: pendiente.
+- Fotos y carruseles: solo Instagram y Facebook, solo fotos (sin videos dentro del carrusel), máximo 10. En Instagram cada foto debe estar entre 4:5 (vertical) y 1.91:1 (horizontal) y todas se recortan al formato de la primera.
 - El copy es el mismo para todas las redes (el título de YouTube puede ser distinto).
 - Un cambio de copy **después** de que Facebook o YouTube ya lo tienen programado no se sincroniza. La fecha sí se sincroniza.
 - YouTube deja los videos en privado hasta que Google aprueba la auditoría del proyecto. Mientras tanto: `via = "uploadpost"` (gratis, 10 videos/mes).
@@ -59,7 +60,8 @@ Notion ⚙️ Publicaciones ◄── estado, ID, URL, error, detalle técnico (
 | `publicador/motor.py` | Orquestación y anti-duplicados |
 | `publicador/redes/*.py` | Un adaptador por red. Para agregar una red: nuevo adaptador + una línea en `redes/__init__.py` |
 | `publicador/media.py` / `drive.py` | Calidad de video / descarga verificada |
+| `publicador/imagenes.py` | Calidad de fotos (intacta o JPEG de alta calidad, solo si la red lo exige) |
 | `publicador/secretos.py` | Tokens: carpeta local o archivo cifrado para GitHub |
 | `.github/workflows/publicar.yml` | La ejecución automática cada 5 min |
 | `publicador/esquema.py` | Nombres de columnas de Notion (si se renombra una columna, se cambia aquí) |
-| `tests/` | 48 pruebas: `.venv/bin/python -m unittest discover -s tests -t .` |
+| `tests/` | 77 pruebas: `.venv/bin/python -m unittest discover -s tests -t .` |

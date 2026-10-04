@@ -96,6 +96,9 @@ class MediosFalsos:
     def portada(self, url):
         return Path("/tmp/p.jpg")
 
+    def fotos(self, c):
+        return None   # todos los contenidos de estas pruebas son videos
+
 
 class Reloj:
     def __init__(self, t):

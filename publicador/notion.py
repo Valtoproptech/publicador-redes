@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime
+from pathlib import Path
 
 import requests
 
@@ -60,6 +61,32 @@ class Notion:
 
     def crear(self, base_id: str, propiedades: dict) -> dict:
         return self._req("POST", "/pages", json={"parent": {"database_id": base_id}, "properties": propiedades})
+
+    # ------------------------------------------------------------ archivos (fotos de carruseles)
+
+    def hijos(self, bloque_id: str) -> list[dict]:
+        bloques, cursor = [], None
+        while True:
+            r = self._req("GET", f"/blocks/{bloque_id}/children",
+                          params={"page_size": 100} | ({"start_cursor": cursor} if cursor else {}))
+            bloques += r["results"]
+            if not r.get("has_more"):
+                return bloques
+            cursor = r["next_cursor"]
+
+    def agregar_imagen(self, pagina_id: str, ruta, nombre: str, leyenda: str) -> str:
+        """Sube un archivo (máx. 5 MiB en el plan gratis) y lo agrega como imagen al cuerpo de la página.
+        Devuelve la URL temporal (1 h) con la que cualquiera puede descargarlo."""
+        tipo = "image/png" if str(ruta).lower().endswith(".png") else "image/jpeg"
+        subida = self._req("POST", "/file_uploads", json={"filename": nombre, "content_type": tipo})
+        datos = Path(ruta).read_bytes()  # en memoria (≤ 5 MiB): así un reintento reenvía el archivo completo
+        # Content-Type None: que requests arme el multipart en vez de usar el JSON de la sesión
+        self._req("POST", f"/file_uploads/{subida['id']}/send", files={"file": (nombre, datos, tipo)},
+                  headers={"Content-Type": None})
+        r = self._req("PATCH", f"/blocks/{pagina_id}/children", json={"children": [{"type": "image", "image": {
+            "type": "file_upload", "file_upload": {"id": subida["id"]},
+            "caption": [{"type": "text", "text": {"content": leyenda}}]}}]})
+        return r["results"][0]["image"]["file"]["url"]
 
 
 # ---------------------------------------------------------------- lectura

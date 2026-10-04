@@ -25,11 +25,13 @@ from pathlib import Path
 from . import notion as N
 from .errores import ErrorPermanente, ErrorPublicador, ErrorTransitorio, ErrorValidacion, ResultadoIncierto
 from .esquema import C, P
+from .imagenes import Album, preparar_foto
 from .media import preparar
-from .reglas import (C_ATENCION, C_BORRADOR, C_CANCELADO, C_ERROR, C_LISTO, C_PROGRAMADO, MAX_INTENTOS,
-                     MAX_RETRASO, P_ACTIVOS, P_ATENCION, P_BORRADORES, P_CANCELADO, P_EN_COLA, P_ERROR,
-                     P_PROGRAMADO, P_PUBLICADO, P_REVISION, P_SUBIENDO, componer_texto, estado_contenido,
-                     id_de_drive, parsear_fecha, planificar, resumen_resultado, validar_texto)
+from .reglas import (C_ATENCION, C_BORRADOR, C_CANCELADO, C_ERROR, C_LISTO, C_PROGRAMADO, FORMATOS_FOTO,
+                     MAX_FOTOS, MAX_INTENTOS, MAX_RETRASO, P_ACTIVOS, P_ATENCION, P_BORRADORES, P_CANCELADO,
+                     P_EN_COLA, P_ERROR, P_PROGRAMADO, P_PUBLICADO, P_REVISION, P_SUBIENDO, REDES_FOTOS,
+                     componer_texto, enlace_drive, estado_contenido, orden_natural, parsear_fecha, planificar,
+                     proporcion_fuera, resumen_resultado, validar_texto)
 from .redes.base import ESPERAR, REINTENTAR, Resultado, Trabajo
 
 log = logging.getLogger("publicador")
@@ -49,6 +51,7 @@ class Contenido:
     texto: str
     titulo_youtube: str
     colaboradores: list[str]
+    carpeta: bool = False      # la URL es una carpeta de Drive: fotos / carrusel
 
 
 @dataclass
@@ -130,6 +133,62 @@ class Medios:
             prep.detalle += " · MD5 verificado con Drive" if meta.get("md5_verificado") else ""
             self._preparados[(file_id, red)] = prep
         return self._preparados[(file_id, red)]
+
+    def fotos(self, c: "Contenido") -> list[dict] | None:
+        """Fotos de Drive (metadatos, en orden) si el contenido es de fotos; None si es un video.
+
+        Valida sin descargar nada: cantidad, formatos y la proporción que exige Instagram."""
+        clave = ("fotos", c.video_id)
+        if clave not in self._preparados:
+            self._preparados[clave] = self._revisar_fotos(c)
+        return self._preparados[clave]
+
+    def _revisar_fotos(self, c: "Contenido") -> list[dict] | None:
+        if c.carpeta:
+            archivos = self.drive.listar(c.video_id)
+        else:
+            m = self.drive.metadatos(c.video_id)
+            if not m.get("mimeType", "").startswith("image/"):
+                return None
+            archivos = [m]
+        fotos = sorted((a for a in archivos if a.get("mimeType") in FORMATOS_FOTO), key=lambda a: orden_natural(a["name"]))
+        otras = [a["name"] for a in archivos if a.get("mimeType", "").startswith("image/") and a not in fotos]
+        videos = [a["name"] for a in archivos if a.get("mimeType", "").startswith("video/")]
+        if videos:
+            raise ErrorValidacion(f"Por ahora los carruseles solo admiten fotos; la carpeta tiene video(s): "
+                                  f"{', '.join(videos[:3])}.")
+        if otras:
+            raise ErrorValidacion(f"Formato de imagen no admitido: {', '.join(otras[:3])}. Usa JPG, PNG, WEBP o HEIC.")
+        if not fotos:
+            raise ErrorValidacion("La carpeta de Drive no tiene fotos (JPG, PNG, WEBP o HEIC).")
+        if len(fotos) > MAX_FOTOS:
+            raise ErrorValidacion(f"La carpeta tiene {len(fotos)} fotos; un carrusel admite máximo {MAX_FOTOS}.")
+        for red in c.redes:
+            if red not in REDES_FOTOS:
+                raise ErrorValidacion(f"{red} no admite fotos ni carruseles en este sistema. Quítala de 'Redes'.")
+            for a in fotos:
+                im = a.get("imageMediaMetadata") or {}
+                ancho, alto = im.get("width") or 0, im.get("height") or 0
+                if (im.get("rotation") or 0) % 2:
+                    ancho, alto = alto, ancho
+                motivo = proporcion_fuera(ancho, alto, red)
+                if motivo:
+                    raise ErrorValidacion(f"La foto '{a['name']}' {motivo}.")
+        return fotos
+
+    def album(self, c: "Contenido", red: str) -> Album:
+        """Descarga cada foto original (una vez) y la prepara para la red."""
+        fotos = []
+        for a in self.fotos(c):
+            if a["id"] not in self._bajados:
+                self._bajados[a["id"]] = self.drive.descargar(a["id"], self.carpeta, tipo="image/", latido=self.latido)
+            if (a["id"], red) not in self._preparados:
+                ruta, meta = self._bajados[a["id"]]
+                foto = preparar_foto(ruta, a["name"], red, self.carpeta)
+                foto.detalle += " · MD5 verificado con Drive" if meta.get("md5_verificado") else ""
+                self._preparados[(a["id"], red)] = foto
+            fotos.append(self._preparados[(a["id"], red)])
+        return Album(fotos)
 
     def portada(self, url: str) -> Path:
         """Descarga la imagen de portada subida a Notion (una URL temporal firmada)."""
@@ -224,7 +283,11 @@ class Motor:
         for red in redes:
             self.cfg.destino(cuenta, red)
         cuando = parsear_fecha(N.leer(pag, C.FECHA), self.cfg.zona_horaria)
-        video_id = id_de_drive(N.leer(pag, C.URL))
+        video_id, carpeta = enlace_drive(N.leer(pag, C.URL))
+        if carpeta:
+            for red in redes:
+                if red not in REDES_FOTOS:
+                    raise ErrorValidacion(f"{red} no admite fotos ni carruseles en este sistema. Quítala de 'Redes'.")
         portadas = [u for u in (N.leer(pag, C.PORTADA) or []) if u]
         texto = componer_texto(N.leer(pag, C.COPY), N.leer(pag, C.HASHTAGS))
         for red in redes:
@@ -233,7 +296,7 @@ class Motor:
         if len(colab) > 3:
             raise ErrorValidacion("Instagram admite máximo 3 colaboradores.")
         return Contenido(pag["id"], titulo, cuenta, redes, cuando, video_id, portadas[0] if portadas else None, texto,
-                         N.leer(pag, C.TITULO_YT) or "", colab)
+                         N.leer(pag, C.TITULO_YT) or "", colab, carpeta)
 
     def _trabajo(self, f: Fila, c: Contenido | None) -> Trabajo:
         return Trabajo(red=f.red, cuenta=f.cuenta, cuando=f.cuando or (c.cuando if c else self.reloj()),
@@ -282,9 +345,14 @@ class Motor:
             self.tocados.add(pag["id"])
             try:
                 c = self.leer_contenido(pag)
+                self.medios.fotos(c)  # fotos: se validan ya (cantidad, formato, proporción) sin descargar
             except ErrorValidacion as e:
                 self._escribir(pag["id"], {C.ESTADO: N.opcion(C_ERROR), C.ERROR: N.texto(str(e))})
                 self._log(f"{self._nombre(N.leer(pag, C.TITULO), pag['id'])}: Error — {e}")
+                continue
+            except ErrorTransitorio as e:
+                self._log(f"{self._nombre(N.leer(pag, C.TITULO), pag['id'])}: Drive no respondió ({e}); "
+                          "lo reviso en la próxima ejecución.")
                 continue
             if self.simulacro:
                 self._simular_contenido(c)
@@ -320,8 +388,8 @@ class Motor:
         self._log(f"{self._nombre(c.titulo, c.id)}: datos OK → se programaría en {', '.join(c.redes)} para {c.cuando.isoformat()}")
         for red in c.redes:
             try:
-                video = self.medios.video(c.video_id, red)
-                self._log(f"   {red}: {video.detalle}")
+                medio = self.medios.album(c, red) if self.medios.fotos(c) else self.medios.video(c.video_id, red)
+                self._log(f"   {red}: {medio.detalle}")
             except ErrorPublicador as e:
                 self._log(f"   {red}: PROBLEMA — {e}")
 
@@ -404,15 +472,18 @@ class Motor:
         t = self._trabajo(f, c)
         detalle = ""
         try:
-            video = self.medios.video(c.video_id, f.red)
-            detalle = video.detalle
-            portada = self.medios.portada(c.portada_url) if c.portada_url else None
-            self._fila(f, bloqueo=self._bloqueo_texto("subida"), detalle=detalle)
-            guardar = lambda x: self._fila(f, id_subida=x)
-            if nativo:
-                res = adaptador.programar(t, video, portada, guardar)
+            if self.medios.fotos(c):
+                res = self._publicar_fotos(f, c, t, adaptador, nativo)
             else:
-                res = adaptador.publicar(t, video, portada, lambda: self._esperar_hasta(f.cuando), guardar)
+                video = self.medios.video(c.video_id, f.red)
+                detalle = video.detalle
+                portada = self.medios.portada(c.portada_url) if c.portada_url else None
+                self._fila(f, bloqueo=self._bloqueo_texto("subida"), detalle=detalle)
+                guardar = lambda x: self._fila(f, id_subida=x)
+                if nativo:
+                    res = adaptador.programar(t, video, portada, guardar)
+                else:
+                    res = adaptador.publicar(t, video, portada, lambda: self._esperar_hasta(f.cuando), guardar)
         except (ErrorValidacion, ErrorPermanente) as e:
             self._fila(f, estado=P_ERROR, error=str(e), bloqueo="")
         except ErrorTransitorio as e:
@@ -421,6 +492,31 @@ class Motor:
             self._fila(f, estado=P_REVISION, error=str(e), bloqueo="")
         else:
             self._aplicar(f, res)
+
+    def _publicar_fotos(self, f: Fila, c: Contenido, t: Trabajo, adaptador, nativo: bool) -> Resultado:
+        """Igual que un video, con fotos. Los errores los clasifica _publicar (mismo try)."""
+        album = self.medios.album(c, f.red)
+        if adaptador.fotos_por_url:
+            self._alojar(f, album)
+        self._fila(f, bloqueo=self._bloqueo_texto("subida"), detalle=album.detalle)
+        guardar = lambda x: self._fila(f, id_subida=x)
+        if nativo:
+            return adaptador.programar_fotos(t, album, guardar)
+        return adaptador.publicar_fotos(t, album, lambda: self._esperar_hasta(f.cuando), guardar)
+
+    def _alojar(self, f: Fila, album: Album) -> None:
+        """Sube cada foto al cuerpo de la fila de Publicaciones en Notion y guarda su URL temporal (1 h).
+
+        Instagram descarga las fotos desde ahí. Si la foto ya está (un reintento), se reutiliza."""
+        existentes = {}
+        for b in self.n.hijos(f.id):
+            img = b.get("image") or {}
+            if b.get("type") == "image" and img.get("type") == "file":
+                existentes["".join(x.get("plain_text", "") for x in img.get("caption", []))] = img["file"]["url"]
+        for foto in album.fotos:
+            leyenda = f"{foto.nombre} · md5 {foto.md5}"
+            nombre = Path(foto.nombre).stem + foto.ruta.suffix
+            foto.url = existentes.get(leyenda) or self.n.agregar_imagen(f.id, foto.ruta, nombre, leyenda)
 
     def _esperar_hasta(self, cuando: datetime) -> None:
         while (falta := (cuando - self.reloj()).total_seconds()) > 0:
