@@ -34,6 +34,7 @@ Notion ⚙️ Publicaciones ◄── estado, ID, URL, error, detalle técnico (
 | D10 | **Anti-duplicados en 5 capas** | 1) Una ejecución a la vez. 2) La fila pasa a *Subiendo* y se relee antes de tocar la red. 3) Con *ID publicación* jamás se republica. 4) IDs intermedios guardados al instante + conciliación tras cortes. 5) Si hay duda → *Requiere revisión*, nunca un reintento ciego | — |
 | D11 | **Portada: la imagen se sube directo en Notion** | Notion entrega una URL temporal que Instagram acepta; no hace falta ningún almacenamiento extra | Guardarla en Cloud Storage (de pago) |
 | D12 | **Mantener vivo el cron** | GitHub apaga los cron de repos públicos tras 60 días sin actividad; el workflow hace un commit vacío cada 45 días. Los tokens de TikTok que se renuevan se guardan cifrados con un commit | — |
+| D13 | **Columna "Formato" en Contenidos** (Video / Foto / Carrusel / Texto) | Ayuda visual para ordenar el planner. Se elige **a mano**; el motor **no la lee** ni cambia nada al publicar (sigue siendo solo video). Es opcional: `verificar` no la exige | Detectarla automáticamente; usarla para decidir cómo se publica |
 
 ## Tipos de error (qué hace el sistema con cada uno)
 | Tipo | Ejemplo | Resultado |

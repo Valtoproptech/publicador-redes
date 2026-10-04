@@ -22,7 +22,7 @@ from pathlib import Path
 from . import secretos as S
 from .config import cargar
 
-OPCIONALES = {"TITULO_YT"}  # columnas que pueden no existir en Notion
+OPCIONALES = {"TITULO_YT", "FORMATO"}  # columnas que pueden no existir en Notion
 
 
 def _notion_y_drive(sec):
