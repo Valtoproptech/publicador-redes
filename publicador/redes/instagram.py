@@ -51,6 +51,38 @@ class Instagram(Adaptador):
                    data={"creation_id": contenedor}).json()
         return self._resultado(r["id"], nota)
 
+    # ------------------------------------------------------------ fotos y carruseles
+
+    fotos_por_url = True   # Instagram solo acepta fotos por URL pública: el motor las aloja en Notion
+
+    def publicar_fotos(self, t: Trabajo, album, esperar, guardar_id) -> Resultado:
+        """1 foto → post de imagen; 2 a 10 → carrusel. Mismo cierre que los Reels: esperar → media_publish."""
+        crear = lambda datos, contexto: llamar(self.s, "POST", f"{self.g}/{self.ig}/media", data=datos,
+                                               contexto=contexto).json()["id"]
+        final = {"caption": t.texto}
+        if t.colaboradores:
+            final["collaborators"] = json.dumps(t.colaboradores)
+        if len(album.fotos) == 1:
+            contenedor = crear(final | {"image_url": album.fotos[0].url}, "Instagram: crear contenedor de foto")
+        else:
+            hijos = []
+            for i, foto in enumerate(album.fotos, 1):
+                hijo = crear({"image_url": foto.url, "is_carousel_item": "true"}, f"Instagram: foto {i}")
+                self._esperar_procesado(hijo)
+                hijos.append(hijo)
+            contenedor = crear(final | {"media_type": "CAROUSEL", "children": ",".join(hijos)},
+                               "Instagram: crear carrusel")
+        guardar_id(contenedor)
+        self._esperar_procesado(contenedor)
+        esperar()
+        r = llamar(self.s, "POST", f"{self.g}/{self.ig}/media_publish", final=True, contexto="Instagram: publicar",
+                   data={"creation_id": contenedor}).json()
+        nota = ""
+        proporciones = {round(f.info.ancho / f.info.alto, 2) for f in album.fotos}
+        if len(proporciones) > 1:
+            nota = "Las fotos tienen proporciones distintas: Instagram las recorta todas al formato de la primera."
+        return self._resultado(r["id"], nota)
+
     def _resultado(self, media_id: str | None, nota: str = "") -> Resultado:
         enlace = None
         if media_id:
@@ -68,9 +100,9 @@ class Instagram(Adaptador):
             if codigo == "FINISHED":
                 return
             if codigo in ("ERROR", "EXPIRED"):
-                raise ErrorPermanente(f"Instagram rechazó el video al procesarlo: {estado.get('status')}")
+                raise ErrorPermanente(f"Instagram rechazó el archivo al procesarlo: {estado.get('status')}")
             self.dormir(10)
-        raise ErrorTransitorio("Instagram tardó más de 15 min en procesar el video.")
+        raise ErrorTransitorio("Instagram tardó más de 15 min en procesar el archivo.")
 
     def recuperar(self, t: Trabajo) -> Resultado | str:
         if not t.id_subida:

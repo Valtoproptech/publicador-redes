@@ -29,7 +29,7 @@ class Drive:
 
     def metadatos(self, file_id: str) -> dict:
         from googleapiclient.errors import HttpError
-        campos = "id,name,mimeType,size,md5Checksum,videoMediaMetadata,shortcutDetails"
+        campos = "id,name,mimeType,size,md5Checksum,videoMediaMetadata,imageMediaMetadata,shortcutDetails"
         try:
             m = self.api.files().get(fileId=file_id, fields=campos, supportsAllDrives=True).execute()
         except HttpError as e:
@@ -40,6 +40,31 @@ class Drive:
         if m.get("mimeType") == "application/vnd.google-apps.shortcut":
             return self.metadatos(m["shortcutDetails"]["targetId"])
         return m
+
+    def listar(self, carpeta_id: str) -> list[dict]:
+        """Archivos de una carpeta (sin subcarpetas), con los atajos resueltos a su archivo real."""
+        from googleapiclient.errors import HttpError
+        campos = "nextPageToken,files(id,name,mimeType,size,md5Checksum,imageMediaMetadata,shortcutDetails)"
+        try:
+            m = self.api.files().get(fileId=carpeta_id, fields="id,mimeType", supportsAllDrives=True).execute()
+            if m.get("mimeType") != "application/vnd.google-apps.folder":
+                raise ErrorValidacion("El enlace de Drive no es una carpeta.")
+            archivos, pagina = [], None
+            while True:
+                r = self.api.files().list(q=f"'{carpeta_id}' in parents and trashed=false", fields=campos,
+                                          pageSize=100, pageToken=pagina, supportsAllDrives=True,
+                                          includeItemsFromAllDrives=True).execute()
+                archivos += r.get("files", [])
+                pagina = r.get("nextPageToken")
+                if not pagina:
+                    break
+        except HttpError as e:
+            if e.resp.status in (403, 404):
+                raise ErrorValidacion("No encuentro la carpeta en Drive o la cuenta conectada no tiene acceso. "
+                                      "Revisa el enlace y que la carpeta esté compartida con esa cuenta.") from e
+            raise ErrorTransitorio(f"Drive respondió {e.resp.status}") from e
+        return [self.metadatos(a["id"]) if a.get("mimeType") == "application/vnd.google-apps.shortcut" else a
+                for a in archivos]
 
     def descargar(self, file_id: str, carpeta: Path, *, tipo: str = "video/",
                   latido: Callable[[], None] = lambda: None) -> tuple[Path, dict]:

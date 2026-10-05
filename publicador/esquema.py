@@ -7,7 +7,7 @@ class C:
     CUENTA = "Cuenta"
     REDES = "Redes"
     FECHA = "Fecha de publicación"
-    URL = "URL"
+    URL = "URL"                   # archivo de Drive (video o foto) o carpeta de Drive (carrusel de fotos)
     PORTADA = "Portada"
     COPY = "Copy"
     HASHTAGS = "Hashtags"
