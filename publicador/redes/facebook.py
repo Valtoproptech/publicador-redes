@@ -1,6 +1,7 @@
 """Facebook Page: Reels (3–90 s) por la Reels API; videos más largos por el endpoint de videos.
 
 Ambos admiten programación nativa: el video queda subido y Facebook lo publica a la hora.
+Las Stories (fotos y videos) no: se suben antes y se publican a la hora exacta.
 """
 from __future__ import annotations
 
@@ -12,11 +13,13 @@ import requests
 
 from ..errores import ErrorPermanente, ResultadoIncierto
 from ..http import llamar
+from ..imagenes import Foto
 from ..reglas import P_PROGRAMADO, P_PUBLICADO
 from ..secretos import enmascarar
-from .base import REINTENTAR, Adaptador, Resultado, Trabajo
+from .base import PREFIJO_STORY, REINTENTAR, Adaptador, Resultado, Trabajo, publicar_en_orden
 
 REEL_MAX = 90
+PUBLICANDO = "|publicando"
 
 
 class Facebook(Adaptador):
@@ -145,6 +148,44 @@ class Facebook(Adaptador):
             return Resultado(P_PROGRAMADO, post, url)
         return Resultado(P_PUBLICADO, post, url, datetime.now(timezone.utc))
 
+    # ------------------------------------------------------------ Stories
+
+    def publicar_story(self, t: Trabajo, secuencia, esperar, guardar_id) -> Resultado:
+        """Facebook no programa Stories: se sube todo antes (fotos sin publicar, videos sin finalizar), se espera
+        la hora y se publica cada pieza en orden. '|publicando' en ID de subida marca que ya empezó a publicar."""
+        piezas: list[tuple[str, str]] = []   # ("foto" | "video", ID)
+        for i, pieza in enumerate(secuencia.piezas, 1):
+            if isinstance(pieza, Foto):
+                with open(pieza.ruta, "rb") as f:
+                    r = llamar(self.s, "POST", f"{self.g}/{self.page}/photos", data={"published": "false"},
+                               files={"source": f}, headers=self.h, contexto=f"Facebook: subir Story {i}",
+                               timeout=(20, 300)).json()
+                piezas.append(("foto", r["id"]))
+            else:
+                r = llamar(self.s, "POST", f"{self.g}/{self.page}/video_stories", data={"upload_phase": "start"},
+                           headers=self.h, contexto=f"Facebook: iniciar Story {i}").json()
+                with open(pieza.ruta, "rb") as f:
+                    llamar(self.s, "POST", r["upload_url"], data=f, contexto=f"Facebook: subir Story {i}",
+                           headers=self.h | {"offset": "0", "file_size": str(pieza.ruta.stat().st_size)})
+                piezas.append(("video", r["video_id"]))
+        subida = PREFIJO_STORY + ",".join(f"{tipo}-{pid}" for tipo, pid in piezas)
+        guardar_id(subida)
+        esperar()
+        guardar_id(subida + PUBLICANDO)
+
+        def publicar(tipo: str, pid: str) -> str:
+            ruta, datos = ("photo_stories", {"photo_id": pid}) if tipo == "foto" else \
+                ("video_stories", {"upload_phase": "finish", "video_id": pid})
+            r = llamar(self.s, "POST", f"{self.g}/{self.page}/{ruta}", data=datos, headers=self.h, final=True,
+                       contexto="Facebook: publicar Story").json()
+            if r.get("success") is False:
+                raise ErrorPermanente("Facebook no aceptó la Story.")
+            return r.get("post_id") or pid
+
+        ids = publicar_en_orden(t.red, [lambda p=p: publicar(*p) for p in piezas])
+        return Resultado(P_PUBLICADO, ",".join(ids), f"https://www.facebook.com/{self.page}",
+                         datetime.now(timezone.utc))
+
     @staticmethod
     def _es_post(objeto_id: str | None) -> bool:
         """Los posts de página tienen ID 'página_post'; los videos y Reels, un número solo."""
@@ -181,6 +222,11 @@ class Facebook(Adaptador):
     def recuperar(self, t: Trabajo) -> Resultado | str:
         if not t.id_subida:
             return REINTENTAR
+        if t.id_subida.startswith(PREFIJO_STORY):
+            if t.id_subida.endswith(PUBLICANDO):
+                raise ResultadoIncierto("Una ejecución se cortó mientras publicaba las Stories en Facebook. Revisa "
+                                        "las historias de la página y sube a mano las que falten.")
+            return REINTENTAR  # todo quedó subido sin publicar (invisible): seguro volver a la cola
         if t.id_subida.startswith("fotos:"):
             raise ResultadoIncierto("Una ejecución se cortó justo al crear el post de fotos en Facebook. "
                                     "Revisa la página (y sus publicaciones programadas) antes de reintentar.")

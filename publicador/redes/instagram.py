@@ -1,4 +1,4 @@
-"""Instagram Reels vía Graph API (Facebook Login + token de usuario del sistema de Meta).
+"""Instagram (Reels, fotos, carruseles y Stories) vía Graph API (Facebook Login + token de usuario del sistema de Meta).
 
 Flujo: contenedor REELS resumable → subir bytes originales a rupload → esperar FINISHED
 → (esperar la hora) → media_publish.
@@ -10,10 +10,11 @@ import time
 from datetime import datetime, timezone
 import requests
 
-from ..errores import ErrorPermanente, ErrorTransitorio
+from ..errores import ErrorPermanente, ErrorTransitorio, ResultadoIncierto
 from ..http import llamar
+from ..imagenes import Foto
 from ..reglas import P_PUBLICADO
-from .base import ESPERAR, REINTENTAR, Adaptador, Resultado, Trabajo
+from .base import ESPERAR, PREFIJO_STORY, REINTENTAR, Adaptador, Resultado, Trabajo, publicar_en_orden
 
 
 class Instagram(Adaptador):
@@ -37,7 +38,13 @@ class Instagram(Adaptador):
             datos["collaborators"] = json.dumps(t.colaboradores)
         if t.portada_url:
             datos["cover_url"] = t.portada_url
-        nota = ""
+        contenedor = self._subir_video(datos, video, guardar_id)
+        self._esperar_procesado(contenedor)
+        esperar()
+        return self._resultado(self._publicar_contenedor(contenedor))
+
+    def _subir_video(self, datos: dict, video, guardar_id) -> str:
+        """Crea el contenedor resumable, guarda su ID al instante y sube los bytes del archivo."""
         r = llamar(self.s, "POST", f"{self.g}/{self.ig}/media", data=datos, contexto="Instagram: crear contenedor").json()
         contenedor = r["id"]
         guardar_id(contenedor)
@@ -45,11 +52,11 @@ class Instagram(Adaptador):
         with open(video.ruta, "rb") as f:
             llamar(self.s, "POST", uri, data=f, contexto="Instagram: subir video",
                    headers={"offset": "0", "file_size": str(video.ruta.stat().st_size)})
-        self._esperar_procesado(contenedor)
-        esperar()
-        r = llamar(self.s, "POST", f"{self.g}/{self.ig}/media_publish", final=True, contexto="Instagram: publicar",
-                   data={"creation_id": contenedor}).json()
-        return self._resultado(r["id"], nota)
+        return contenedor
+
+    def _publicar_contenedor(self, contenedor: str) -> str:
+        return llamar(self.s, "POST", f"{self.g}/{self.ig}/media_publish", final=True, contexto="Instagram: publicar",
+                      data={"creation_id": contenedor}).json()["id"]
 
     # ------------------------------------------------------------ fotos y carruseles
 
@@ -75,13 +82,39 @@ class Instagram(Adaptador):
         guardar_id(contenedor)
         self._esperar_procesado(contenedor)
         esperar()
-        r = llamar(self.s, "POST", f"{self.g}/{self.ig}/media_publish", final=True, contexto="Instagram: publicar",
-                   data={"creation_id": contenedor}).json()
+        media_id = self._publicar_contenedor(contenedor)
         nota = ""
         proporciones = {round(f.info.ancho / f.info.alto, 2) for f in album.fotos}
         if len(proporciones) > 1:
             nota = "Las fotos tienen proporciones distintas: Instagram las recorta todas al formato de la primera."
-        return self._resultado(r["id"], nota)
+        return self._resultado(media_id, nota)
+
+    # ------------------------------------------------------------ Stories
+
+    def publicar_story(self, t: Trabajo, secuencia, esperar, guardar_id) -> Resultado:
+        """Un contenedor STORIES por pieza (fotos por URL, videos resumables). Todos quedan listos antes de la
+        hora; después se publican en orden. 'story:C1,C2…' en ID de subida permite conciliar tras un corte."""
+        contenedores: list[str] = []
+        guardar = lambda: guardar_id(PREFIJO_STORY + ",".join(contenedores))
+        for i, pieza in enumerate(secuencia.piezas, 1):
+            if isinstance(pieza, Foto):
+                contenedor = llamar(self.s, "POST", f"{self.g}/{self.ig}/media", contexto=f"Instagram: Story {i}",
+                                    data={"media_type": "STORIES", "image_url": pieza.url}).json()["id"]
+            else:
+                contenedor = self._subir_video({"media_type": "STORIES", "upload_type": "resumable"}, pieza,
+                                               lambda c: None)
+            contenedores.append(contenedor)
+            guardar()
+        for contenedor in contenedores:
+            self._esperar_procesado(contenedor)
+        esperar()
+        ids = publicar_en_orden(t.red, [lambda c=c: self._publicar_contenedor(c) for c in contenedores])
+        return self._resultado_story(ids)
+
+    def _resultado_story(self, ids: list[str], nota: str = "") -> Resultado:
+        r = self._resultado(ids[0], nota)
+        r.id_publicacion = ",".join(ids)
+        return r
 
     def _resultado(self, media_id: str | None, nota: str = "") -> Resultado:
         enlace = None
@@ -107,12 +140,25 @@ class Instagram(Adaptador):
     def recuperar(self, t: Trabajo) -> Resultado | str:
         if not t.id_subida:
             return REINTENTAR  # el corte fue antes de crear el contenedor: no hay nada en Instagram
+        if t.id_subida.startswith(PREFIJO_STORY):
+            return self._recuperar_story(t.id_subida.removeprefix(PREFIJO_STORY).split(","))
         codigo = self._get(t.id_subida, fields="status_code").get("status_code")
         if codigo == "PUBLISHED":
             return self._resultado(self._buscar_media(t), "Recuperado tras una interrupción.")
         if codigo == "IN_PROGRESS":
             return ESPERAR
         return REINTENTAR  # FINISHED sin publicar, ERROR o EXPIRED: no está publicado
+
+    def _recuperar_story(self, contenedores: list[str]) -> Resultado | str:
+        """Las Stories solo se publican cuando todos los contenedores existen: el estado de cada uno lo dice todo."""
+        publicadas = sum(self._get(c, fields="status_code").get("status_code") == "PUBLISHED" for c in contenedores)
+        if publicadas == 0:
+            return REINTENTAR  # ninguna salió: los contenedores sin publicar caducan solos
+        if publicadas == len(contenedores):
+            return Resultado(P_PUBLICADO, PREFIJO_STORY + ",".join(contenedores), None, datetime.now(timezone.utc),
+                             "Recuperado tras una interrupción.")
+        raise ResultadoIncierto(f"Una ejecución se cortó a mitad de las Stories: salieron {publicadas} de "
+                                f"{len(contenedores)} en Instagram. Sube a mano las que faltan.")
 
     def _buscar_media(self, t: Trabajo) -> str | None:
         recientes = self._get(f"{self.ig}/media", fields="id,caption,timestamp", limit=15).get("data", [])

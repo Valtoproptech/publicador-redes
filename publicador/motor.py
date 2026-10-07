@@ -25,13 +25,14 @@ from pathlib import Path
 from . import notion as N
 from .errores import ErrorPermanente, ErrorPublicador, ErrorTransitorio, ErrorValidacion, ResultadoIncierto
 from .esquema import C, P
-from .imagenes import Album, preparar_foto
+from .imagenes import Album, Secuencia, preparar_foto
 from .media import preparar
-from .reglas import (C_ATENCION, C_BORRADOR, C_CANCELADO, C_ERROR, C_LISTO, C_PROGRAMADO, FORMATOS_FOTO,
-                     MAX_FOTOS, MAX_INTENTOS, MAX_RETRASO, P_ACTIVOS, P_ATENCION, P_BORRADORES, P_CANCELADO,
-                     P_EN_COLA, P_ERROR, P_PROGRAMADO, P_PUBLICADO, P_REVISION, P_SUBIENDO, REDES_FOTOS,
-                     componer_texto, enlace_drive, estado_contenido, orden_natural, parsear_fecha, planificar,
-                     proporcion_fuera, resumen_resultado, validar_texto)
+from .reglas import (C_ATENCION, C_BORRADOR, C_CANCELADO, C_ERROR, C_LISTO, C_PROGRAMADO, FORMATO_STORY,
+                     FORMATOS_FOTO, MAX_FOTOS, MAX_INTENTOS, MAX_RETRASO, MAX_STORIES, P_ACTIVOS, P_ATENCION,
+                     P_BORRADORES, P_CANCELADO, P_EN_COLA, P_ERROR, P_PROGRAMADO, P_PUBLICADO, P_REVISION,
+                     P_SUBIENDO, REDES_FOTOS, REDES_STORY, componer_texto, duracion_story_fuera, enlace_drive,
+                     estado_contenido, orden_natural, parsear_fecha, planificar, proporcion_fuera,
+                     resumen_resultado, validar_texto)
 from .redes.base import ESPERAR, REINTENTAR, Resultado, Trabajo
 
 log = logging.getLogger("publicador")
@@ -51,7 +52,8 @@ class Contenido:
     texto: str
     titulo_youtube: str
     colaboradores: list[str]
-    carpeta: bool = False      # la URL es una carpeta de Drive: fotos / carrusel
+    carpeta: bool = False      # la URL es una carpeta de Drive: fotos / carrusel (o varias Stories)
+    story: bool = False        # Formato = Story: cada archivo se publica como una Story
 
 
 @dataclass
@@ -176,6 +178,58 @@ class Medios:
                     raise ErrorValidacion(f"La foto '{a['name']}' {motivo}.")
         return fotos
 
+    def story(self, c: "Contenido") -> list[dict]:
+        """Archivos de Drive (metadatos, en orden) de un contenido de Stories: fotos y videos mezclados.
+
+        Igual que con las fotos, se valida sin descargar: cantidad, formatos y la duración de cada video."""
+        clave = ("story", c.video_id)
+        if clave not in self._preparados:
+            self._preparados[clave] = self._revisar_story(c)
+        return self._preparados[clave]
+
+    def _revisar_story(self, c: "Contenido") -> list[dict]:
+        archivos = self.drive.listar(c.video_id) if c.carpeta else [self.drive.metadatos(c.video_id)]
+        es_video = lambda a: a.get("mimeType", "").startswith("video/")
+        piezas = sorted((a for a in archivos if a.get("mimeType") in FORMATOS_FOTO or es_video(a)),
+                        key=lambda a: orden_natural(a["name"]))
+        otras = [a["name"] for a in archivos if a.get("mimeType", "").startswith("image/") and a not in piezas]
+        if otras:
+            raise ErrorValidacion(f"Formato de imagen no admitido: {', '.join(otras[:3])}. Usa JPG, PNG, WEBP o HEIC.")
+        if not piezas:
+            raise ErrorValidacion("La carpeta de Drive no tiene fotos ni videos para las Stories." if c.carpeta else
+                                  "El archivo de Drive no es una foto ni un video.")
+        if len(piezas) > MAX_STORIES:
+            raise ErrorValidacion(f"La carpeta tiene {len(piezas)} archivos; el máximo es {MAX_STORIES} Stories "
+                                  "por contenido. Divídela en dos filas.")
+        for red in c.redes:
+            for a in filter(es_video, piezas):
+                ms = (a.get("videoMediaMetadata") or {}).get("durationMillis")
+                motivo = duracion_story_fuera(int(ms) / 1000, red) if ms else None
+                if motivo:
+                    raise ErrorValidacion(f"El video '{a['name']}' {motivo}.")
+        return piezas
+
+    def secuencia(self, c: "Contenido", red: str) -> Secuencia:
+        """Descarga cada archivo original (una vez) y lo prepara con los límites de las Stories de la red."""
+        piezas = []
+        for a in self.story(c):
+            foto = a["mimeType"] in FORMATOS_FOTO
+            if a["id"] not in self._bajados:
+                self._bajados[a["id"]] = self.drive.descargar(a["id"], self.carpeta, tipo="image/" if foto else "video/",
+                                                              latido=self.latido)
+            clave = (a["id"], f"{red} Story")
+            if clave not in self._preparados:
+                ruta, meta = self._bajados[a["id"]]
+                if foto:
+                    pieza = preparar_foto(ruta, a["name"], clave[1], self.carpeta)
+                else:
+                    pieza = preparar(ruta, clave[1], self.carpeta)
+                    pieza.nombre = a["name"]
+                pieza.detalle += " · MD5 verificado con Drive" if meta.get("md5_verificado") else ""
+                self._preparados[clave] = pieza
+            piezas.append(self._preparados[clave])
+        return Secuencia(piezas)
+
     def album(self, c: "Contenido", red: str) -> Album:
         """Descarga cada foto original (una vez) y la prepara para la red."""
         fotos = []
@@ -284,7 +338,12 @@ class Motor:
             self.cfg.destino(cuenta, red)
         cuando = parsear_fecha(N.leer(pag, C.FECHA), self.cfg.zona_horaria)
         video_id, carpeta = enlace_drive(N.leer(pag, C.URL))
-        if carpeta:
+        story = N.leer(pag, C.FORMATO) == FORMATO_STORY
+        if story:
+            for red in redes:
+                if red not in REDES_STORY:
+                    raise ErrorValidacion(f"{red} no permite publicar Stories por API. Quítala de 'Redes'.")
+        elif carpeta:
             for red in redes:
                 if red not in REDES_FOTOS:
                     raise ErrorValidacion(f"{red} no admite fotos ni carruseles en este sistema. Quítala de 'Redes'.")
@@ -296,7 +355,7 @@ class Motor:
         if len(colab) > 3:
             raise ErrorValidacion("Instagram admite máximo 3 colaboradores.")
         return Contenido(pag["id"], titulo, cuenta, redes, cuando, video_id, portadas[0] if portadas else None, texto,
-                         N.leer(pag, C.TITULO_YT) or "", colab, carpeta)
+                         N.leer(pag, C.TITULO_YT) or "", colab, carpeta, story)
 
     def _trabajo(self, f: Fila, c: Contenido | None) -> Trabajo:
         return Trabajo(red=f.red, cuenta=f.cuenta, cuando=f.cuando or (c.cuando if c else self.reloj()),
@@ -345,7 +404,8 @@ class Motor:
             self.tocados.add(pag["id"])
             try:
                 c = self.leer_contenido(pag)
-                self.medios.fotos(c)  # fotos: se validan ya (cantidad, formato, proporción) sin descargar
+                # fotos y Stories: se validan ya (cantidad, formato, proporción, duración) sin descargar
+                self.medios.story(c) if c.story else self.medios.fotos(c)
             except ErrorValidacion as e:
                 self._escribir(pag["id"], {C.ESTADO: N.opcion(C_ERROR), C.ERROR: N.texto(str(e))})
                 self._log(f"{self._nombre(N.leer(pag, C.TITULO), pag['id'])}: Error — {e}")
@@ -388,7 +448,12 @@ class Motor:
         self._log(f"{self._nombre(c.titulo, c.id)}: datos OK → se programaría en {', '.join(c.redes)} para {c.cuando.isoformat()}")
         for red in c.redes:
             try:
-                medio = self.medios.album(c, red) if self.medios.fotos(c) else self.medios.video(c.video_id, red)
+                if c.story:
+                    medio = self.medios.secuencia(c, red)
+                elif self.medios.fotos(c):
+                    medio = self.medios.album(c, red)
+                else:
+                    medio = self.medios.video(c.video_id, red)
                 self._log(f"   {red}: {medio.detalle}")
             except ErrorPublicador as e:
                 self._log(f"   {red}: PROBLEMA — {e}")
@@ -424,7 +489,8 @@ class Motor:
                 return
         plan = planificar(red=f.red, via="nativo" if f.via == "Nativo" else "uploadpost", estado=f.estado,
                           cuando=f.cuando, ahora=ahora, anticipacion=self.anticipacion,
-                          bloqueo_desde=f.bloqueo_desde, bloqueo_propio=f.bloqueo_run == self.run)
+                          bloqueo_desde=f.bloqueo_desde, bloqueo_propio=f.bloqueo_run == self.run,
+                          story=bool(c and c.story))
         if plan.accion == "esperar":
             return
         if plan.accion == "vencido":
@@ -472,7 +538,9 @@ class Motor:
         t = self._trabajo(f, c)
         detalle = ""
         try:
-            if self.medios.fotos(c):
+            if c.story:
+                res = self._publicar_story(f, c, t, adaptador)
+            elif self.medios.fotos(c):
                 res = self._publicar_fotos(f, c, t, adaptador, nativo)
             else:
                 video = self.medios.video(c.video_id, f.red)
@@ -503,6 +571,17 @@ class Motor:
         if nativo:
             return adaptador.programar_fotos(t, album, guardar)
         return adaptador.publicar_fotos(t, album, lambda: self._esperar_hasta(f.cuando), guardar)
+
+    def _publicar_story(self, f: Fila, c: Contenido, t: Trabajo, adaptador) -> Resultado:
+        """Stories: siempre a la hora exacta (ninguna red las programa por API)."""
+        sec = self.medios.secuencia(c, f.red)
+        if adaptador.fotos_por_url and sec.fotos:
+            self._alojar(f, Album(sec.fotos))
+        self._fila(f, bloqueo=self._bloqueo_texto("subida"), detalle=sec.detalle)
+        res = adaptador.publicar_story(t, sec, lambda: self._esperar_hasta(f.cuando), lambda x: self._fila(f, id_subida=x))
+        if c.texto:
+            res.nota = (res.nota + " El copy y los hashtags no salen en las Stories: la API no lo permite.").strip()
+        return res
 
     def _alojar(self, f: Fila, album: Album) -> None:
         """Sube cada foto al cuerpo de la fila de Publicaciones en Notion y guarda su URL temporal (1 h).

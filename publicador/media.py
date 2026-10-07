@@ -22,6 +22,7 @@ class ArchivoPreparado:
     ruta: Path
     info: InfoVideo
     detalle: str
+    nombre: str = ""   # nombre en Drive (para el detalle de una secuencia de Stories)
 
 
 def _fps(texto: str | None) -> float:
@@ -97,7 +98,7 @@ def _ffmpeg(args: list[str]) -> None:
 def _dimensiones(info: InfoVideo, red: str) -> tuple[int, int]:
     lim = LIMITES[red]
     factor = 1.0
-    if red == "Instagram":
+    if red.startswith("Instagram"):
         # Si igual hay que recodificar, se entrega a la resolución que Instagram muestra (lado corto 1080),
         # reducida aquí con lanczos en vez de dejar que la plataforma la reduzca a su manera.
         factor = min(factor, 1080 / min(info.ancho, info.alto))
@@ -125,7 +126,7 @@ def recodificar(origen: Path, info: InfoVideo, red: str, destino: Path) -> None:
         args += ["-r", str(fmax)]
     elif round(info.fps) < fmin:
         args += ["-r", "30"]
-    args += ["-c:a", "aac", "-b:a", "128k" if red == "Instagram" else "192k", "-ar", "48000",
+    args += ["-c:a", "aac", "-b:a", "128k" if red.startswith("Instagram") else "192k", "-ar", "48000",
              "-movflags", "+faststart", str(destino)]
     _ffmpeg(args)
 
@@ -137,7 +138,7 @@ def preparar(origen: Path, red: str, carpeta: Path) -> ArchivoPreparado:
         raise ErrorValidacion(f"El video no sirve para {red}: " + "; ".join(diag.fatal) + ".")
     if diag.ok:
         return ArchivoPreparado(origen, info, f"Original intacto · {info.resumen()}")
-    destino = carpeta / f"{origen.stem}-{red.lower()}.mp4"
+    destino = carpeta / f"{origen.stem}-{red.lower().replace(' ', '-')}.mp4"
     if not diag.arreglable:
         _ffmpeg(["-i", str(origen), "-map", "0", "-c", "copy", "-movflags", "+faststart", str(destino)])
         motivo, accion = diag.solo_contenedor, "Reordenado sin recomprimir"

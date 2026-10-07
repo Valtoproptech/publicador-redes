@@ -160,6 +160,11 @@ LIMITES = {
     "TikTok": dict(codecs={"h264", "hevc", "vp8", "vp9"}, lado_max=4096, lado_corto_min=360, fps=(23, 60),
                    peso_max=4_000 * MB, duracion=(3, 600)),
     "YouTube": dict(),
+    # Stories (fuente: docs de Meta, ver docs/01-decisiones.md D15). Solo se usan para preparar el archivo.
+    "Instagram Story": dict(codecs={"h264", "hevc"}, ancho_max=1920, fps=(23, 60), bitrate_max=25_000_000,
+                            peso_max=100 * MB, duracion=(3, 60), audio={"aac"}, muestreo_max=48_000),
+    "Facebook Story": dict(codecs={"h264", "hevc"}, fps=(24, 60), duracion=(3, 90), lado_corto_min=540,
+                           peso_max=4_000 * MB),
 }
 
 
@@ -218,7 +223,25 @@ LIMITES_FOTO = {
     "Instagram": dict(formatos={"JPEG"}, peso_max=5 * MIB, proporcion=(0.8, 1.91)),
     # Facebook recibe el archivo directo; JPEG y PNG sin conversión.
     "Facebook": dict(formatos={"JPEG", "PNG"}, peso_max=10 * MB),
+    # Stories: cualquier proporción (lo ideal es 9:16, 1080x1920); mismos formatos y pesos.
+    "Instagram Story": dict(formatos={"JPEG"}, peso_max=5 * MIB),
+    "Facebook Story": dict(formatos={"JPEG", "PNG"}, peso_max=10 * MB),
 }
+
+
+# ---------------------------------------------------------------- Stories
+
+FORMATO_STORY = "Story"                   # valor de la columna "Formato" que convierte el contenido en Stories
+REDES_STORY = ("Instagram", "Facebook")   # TikTok y YouTube no tienen Stories por API
+MAX_STORIES = 10                          # por contenido (una carpeta = varias Stories seguidas)
+DURACION_STORY = {red: LIMITES[f"{red} Story"]["duracion"] for red in REDES_STORY}   # segundos
+
+
+def duracion_story_fuera(segundos: float, red: str) -> str | None:
+    lo, hi = DURACION_STORY[red]
+    if lo <= segundos <= hi:
+        return None
+    return f"dura {segundos:.0f} s y las Stories de {red} admiten de {lo} a {hi} s"
 
 
 @dataclass
@@ -273,7 +296,7 @@ class Plan:
 
 def planificar(*, red: str, via: str, estado: str, cuando: datetime, ahora: datetime,
                anticipacion: timedelta, bloqueo_desde: datetime | None = None,
-               bloqueo_propio: bool = False) -> Plan:
+               bloqueo_propio: bool = False, story: bool = False) -> Plan:
     faltan = cuando - ahora
     if estado == P_SUBIENDO:
         if bloqueo_propio:
@@ -289,7 +312,7 @@ def planificar(*, red: str, via: str, estado: str, cuando: datetime, ahora: date
         return Plan("esperar", f"estado {estado}")
     if faltan < -MAX_RETRASO:
         return Plan("vencido", f"la fecha pasó hace {_humano(-faltan)}")
-    nativo = via == "nativo" and red in MAX_NATIVO
+    nativo = via == "nativo" and red in MAX_NATIVO and not story   # ninguna red programa Stories por API
     if nativo and MARGEN_NATIVO < faltan <= MAX_NATIVO[red]:
         return Plan("programar_nativo")
     if faltan <= anticipacion:

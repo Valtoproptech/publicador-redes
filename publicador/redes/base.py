@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from ..errores import ErrorPermanente, ResultadoIncierto
+from ..errores import ErrorPermanente, ErrorPublicador, ResultadoIncierto
 from ..media import ArchivoPreparado
 
 
@@ -41,6 +41,8 @@ Esperar = Callable[[], None]
 REINTENTAR = "reintentar"   # comprobado que NO se publicó: seguro volver a la cola
 ESPERAR = "esperar"         # la plataforma sigue procesando: volver a mirar más tarde
 
+PREFIJO_STORY = "story:"    # en "ID de subida": las piezas subidas de una secuencia de Stories
+
 
 class Adaptador:
     programa_nativo = False
@@ -64,6 +66,11 @@ class Adaptador:
     def publicar_fotos(self, t: Trabajo, album, esperar: Esperar, guardar_id: GuardarId) -> Resultado:
         raise ErrorPermanente(f"{t.red} no admite fotos ni carruseles en este sistema. Quítala de 'Redes'.")
 
+    # ------------------------------------------------------------ Stories (ninguna red las programa por API)
+    def publicar_story(self, t: Trabajo, secuencia, esperar: Esperar, guardar_id: GuardarId) -> Resultado:
+        """Sube todas las piezas, llama a esperar() y publica una Story por pieza, en orden."""
+        raise ErrorPermanente(f"{t.red} no admite Stories en este sistema. Quítala de 'Redes'.")
+
     def verificar(self, t: Trabajo) -> Resultado | None:
         """Tras la hora programada: ¿ya está público? None = aún no."""
         return None
@@ -78,3 +85,20 @@ class Adaptador:
     def comprobar(self) -> str:
         """Para `publicador verificar`: devuelve el nombre de la cuenta conectada o lanza error."""
         raise NotImplementedError
+
+
+def publicar_en_orden(red: str, pasos: list[Callable[[], str]]) -> list[str]:
+    """Publica las Stories una tras otra y devuelve sus IDs.
+
+    Si una falla después de haber publicado otras, nunca se reintenta solo (repetiría las ya
+    publicadas): pasa a revisión diciendo cuántas salieron."""
+    hechas: list[str] = []
+    for i, paso in enumerate(pasos, 1):
+        try:
+            hechas.append(paso())
+        except ErrorPublicador as e:
+            if not hechas:
+                raise
+            raise ResultadoIncierto(f"Se publicaron {len(hechas)} de {len(pasos)} Stories en {red} y la n.º {i} "
+                                    f"falló ({e}). Sube a mano las que faltan; no se reintenta solo.") from e
+    return hechas

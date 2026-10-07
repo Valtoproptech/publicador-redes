@@ -34,6 +34,21 @@ class Foto:
 
 
 @dataclass
+class Secuencia:
+    """Stories en orden: cada pieza es una Foto o un video (media.ArchivoPreparado)."""
+    piezas: list
+
+    @property
+    def fotos(self) -> list[Foto]:
+        return [p for p in self.piezas if isinstance(p, Foto)]
+
+    @property
+    def detalle(self) -> str:
+        return " | ".join(f"{i}. {p.nombre or p.ruta.name}: {p.detalle}"
+                          for i, p in enumerate(self.piezas, 1))
+
+
+@dataclass
 class Album:
     fotos: list[Foto]
 
@@ -73,7 +88,7 @@ def _a_jpeg(origen: Path, destino: Path, red: str) -> None:
             im = fondo
         elif im.mode != "RGB":
             im = im.convert("RGB")
-        if red == "Instagram" and im.width > ANCHO_MAX:
+        if red.startswith("Instagram") and im.width > ANCHO_MAX:
             im = im.resize((ANCHO_MAX, round(im.height * ANCHO_MAX / im.width)), Image.LANCZOS)
         extra = {"icc_profile": icc} if icc else {}
         for calidad in CALIDADES:
@@ -89,7 +104,7 @@ def preparar_foto(origen: Path, nombre: str, red: str, carpeta: Path) -> Foto:
         raise ErrorValidacion(f"La foto '{nombre}' " + "; ".join(diag.fatal) + ".")
     if diag.ok:
         return Foto(origen, nombre, info, f"Original intacto · {info.resumen()}", _md5(origen))
-    destino = carpeta / f"{origen.stem}-{red.lower()}.jpg"
+    destino = carpeta / f"{origen.stem}-{red.lower().replace(' ', '-')}.jpg"
     _a_jpeg(origen, destino, red)
     nuevo = analizar_foto(destino)
     restante = diagnosticar_foto(nuevo, red)

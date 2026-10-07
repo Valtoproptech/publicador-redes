@@ -44,7 +44,8 @@ class Drive:
     def listar(self, carpeta_id: str) -> list[dict]:
         """Archivos de una carpeta (sin subcarpetas), con los atajos resueltos a su archivo real."""
         from googleapiclient.errors import HttpError
-        campos = "nextPageToken,files(id,name,mimeType,size,md5Checksum,imageMediaMetadata,shortcutDetails)"
+        campos = ("nextPageToken,files(id,name,mimeType,size,md5Checksum,imageMediaMetadata,videoMediaMetadata,"
+                 "shortcutDetails)")
         try:
             m = self.api.files().get(fileId=carpeta_id, fields="id,mimeType", supportsAllDrives=True).execute()
             if m.get("mimeType") != "application/vnd.google-apps.folder":
