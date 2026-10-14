@@ -32,3 +32,8 @@ secreto = "youtube-bambu"    # creado con: python -m publicador conectar-google 
 # de 10 videos/mes sin tarjeta:
 # via = "uploadpost"
 # perfil = "bambu"
+
+# Copy automático: si un video llega sin copy y con "Modo de copy" = "Crear copy", Claude (tarea programada
+# en la app de Claude de la Mac) lo escribe con el skill de estilo de la cuenta (carpeta skills/).
+[copy_automatico]
+# "Franco Soler" = "copy-redes-franco"   # la cuenta debe existir arriba en [cuentas]

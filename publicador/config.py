@@ -45,6 +45,7 @@ class Config:
     anticipacion_minutos: int = 45
     graph_version: str = "v25.0"
     cuentas: dict[str, dict[str, Destino]] = field(default_factory=dict)
+    copy_automatico: dict[str, str] = field(default_factory=dict)   # cuenta → skill de estilo (skills/<nombre>)
 
     def destino(self, cuenta: str, red: str) -> Destino:
         try:
@@ -72,6 +73,10 @@ def cargar(ruta: str | Path | None = None) -> Config:
             if faltan:
                 raise ValueError(f"[cuentas.'{cuenta}'.{red}] falta: {', '.join(faltan)}")
             cuentas[cuenta][red] = Destino(red, via, d)
+    copy_automatico = datos.get("copy_automatico", {})
+    for cuenta in copy_automatico:
+        if cuenta not in cuentas:
+            raise ValueError(f"[copy_automatico] '{cuenta}' no es una cuenta configurada.")
     n = datos.get("notion", {})
     return Config(
         notion_contenidos=n.get("contenidos", ""),
@@ -80,6 +85,7 @@ def cargar(ruta: str | Path | None = None) -> Config:
         anticipacion_minutos=int(datos.get("anticipacion_minutos", 45)),
         graph_version=datos.get("graph_version", "v25.0"),
         cuentas=cuentas,
+        copy_automatico=copy_automatico,
     )
 
 

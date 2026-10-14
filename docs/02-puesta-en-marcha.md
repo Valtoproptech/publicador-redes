@@ -33,6 +33,10 @@ Requisito: cada Instagram es **cuenta profesional** y está **vinculada a su pá
 4. En **Sandbox**, agrega como *Target users* las cuentas de TikTok de cada marca.
 5. Por cada cuenta: `.venv/bin/python -m publicador conectar-tiktok tiktok-bambu` (la primera vez pide el *Client key* y el *Client secret* de la app).
 
+## 4b. Copy automático (opcional)
+1. En `config.toml`, la sección `[copy_automatico]` dice qué cuenta usa qué skill de estilo (carpeta `skills/`).
+2. En la app de Claude (Mac), la tarea programada **copys-redes** corre cada hora: mira los videos pendientes y escribe el copy. No necesita claves.
+
 ## 5. Probar en tu Mac
 ```
 .venv/bin/python -m publicador verificar
@@ -49,5 +53,6 @@ solo cada 5 minutos, con el Mac apagado. Para verlo: pestaña **Actions** del re
 
 ## Mantenimiento
 - **Agregar una marca o red:** su sección en `config.toml` + conectar la cuenta (paso 2, 3 o 4) + `subir-a-github`.
+- **Mejorar el estilo del copy automático:** edita `skills/<nombre>/SKILL.md` (es el mismo skill de Claude), commit y push.
 - **Qué pasó con un video:** columna *Error* en Notion. Historial: pestaña **Actions** en GitHub.
 - **Nada vence**, salvo que alguien revoque un permiso (el error lo dirá). Si TikTok no se usa por un año, hay que reconectarlo.

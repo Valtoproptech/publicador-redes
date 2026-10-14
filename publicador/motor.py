@@ -3,7 +3,9 @@
 1. Contenidos en "Listo para publicar" → se validan y se crea una fila por red en Publicaciones.
 2. Cada publicación activa se planifica: esperar, programar en la plataforma, publicar a la hora,
    verificar o recuperar tras un corte.
-3. El estado de cada contenido se recalcula a partir de sus publicaciones.
+3. Copy automático: "Crear copy" queda a la vista por defecto; un video Listo sin copy espera a que Claude
+   lo escriba desde la Mac (copys.py) antes de programarse.
+4. El estado de cada contenido se recalcula a partir de sus publicaciones.
 
 Anti-duplicados (en orden): un solo proceso a la vez (bloqueo global) → la fila pasa a "Subiendo"
 y se relee antes de tocar ninguna plataforma → una fila con "ID publicación" nunca se vuelve a
@@ -23,12 +25,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import notion as N
+from .copys import copy_pendiente
 from .errores import ErrorPermanente, ErrorPublicador, ErrorTransitorio, ErrorValidacion, ResultadoIncierto
 from .esquema import C, P
 from .imagenes import Album, Secuencia, preparar_foto
 from .media import preparar
 from .reglas import (C_ATENCION, C_BORRADOR, C_CANCELADO, C_ERROR, C_LISTO, C_PROGRAMADO, FORMATO_STORY,
-                     FORMATOS_FOTO, MAX_FOTOS, MAX_INTENTOS, MAX_RETRASO, MAX_STORIES, P_ACTIVOS, P_ATENCION,
+                     FORMATOS_FOTO, MAX_FOTOS, MAX_INTENTOS, MAX_RETRASO, MAX_STORIES,
+                     MODO_CREAR, P_ACTIVOS, P_ATENCION,
                      P_BORRADORES, P_CANCELADO, P_EN_COLA, P_ERROR, P_PROGRAMADO, P_PUBLICADO, P_REVISION,
                      P_SUBIENDO, REDES_FOTOS, REDES_STORY, componer_texto, duracion_story_fuera, enlace_drive,
                      estado_contenido, orden_natural, parsear_fecha, planificar, proporcion_fuera,
@@ -126,9 +130,14 @@ class Medios:
         self._bajados: dict[str, tuple[Path, dict]] = {}
         self._preparados: dict[tuple[str, str], object] = {}
 
-    def video(self, file_id: str, red: str):
+    def original(self, file_id: str) -> Path:
+        """El archivo tal como está en Drive (se descarga una sola vez por ejecución)."""
         if file_id not in self._bajados:
             self._bajados[file_id] = self.drive.descargar(file_id, self.carpeta, latido=self.latido)
+        return self._bajados[file_id][0]
+
+    def video(self, file_id: str, red: str):
+        self.original(file_id)
         if (file_id, red) not in self._preparados:
             ruta, meta = self._bajados[file_id]
             prep = preparar(ruta, red, self.carpeta)
@@ -381,6 +390,7 @@ class Motor:
                 self._publicar(f, c, nativo=False)
             except Exception as e:
                 self._inesperado(f, e)
+        self._modo_por_defecto()
         self._recalcular()
         if not self.informe:
             self._log("Nada que hacer.")
@@ -414,6 +424,14 @@ class Motor:
                 self._log(f"{self._nombre(N.leer(pag, C.TITULO), pag['id'])}: Drive no respondió ({e}); "
                           "lo reviso en la próxima ejecución.")
                 continue
+            pendiente = self._copy_pendiente(pag)
+            if pendiente == "crear":
+                self._log(f"{self._nombre(c.titulo, c.id)}: espera su copy automático (lo escribe Claude desde la Mac).")
+                continue
+            if pendiente:
+                self._escribir(c.id, {C.ESTADO: N.opcion(C_ERROR), C.ERROR: N.texto(pendiente)})
+                self._log(f"{self._nombre(c.titulo, c.id)}: Error — {pendiente}")
+                continue
             if self.simulacro:
                 self._simular_contenido(c)
                 continue
@@ -435,6 +453,21 @@ class Motor:
                     self._fila(f, estado=P_CANCELADO, error="Se quitó esta red del contenido.")
             self._escribir(c.id, {C.ESTADO: N.opcion(C_PROGRAMADO), C.ERROR: N.texto("")})
             self._log(f"{self._nombre(c.titulo, c.id)}: programado en {', '.join(c.redes)} para {c.cuando.isoformat()}")
+
+    # ------------------------------------------------------------ copy automático
+
+    def _copy_pendiente(self, pag: dict) -> str | None:
+        """None si el copy no es asunto del sistema (ya hay copy, o es "Copy propio"); "crear" si lo está
+        escribiendo Claude (copys.py, desde la Mac); si no se puede, el motivo para mostrar en Notion."""
+        return copy_pendiente(pag, self.cfg.copy_automatico)
+
+    def _modo_por_defecto(self) -> None:
+        """Pone "Crear copy" a la vista en las filas sin elegir de las cuentas con copy automático."""
+        if self.simulacro or not self.cfg.copy_automatico:
+            return
+        for pag in self.n.consultar(self.cfg.notion_contenidos, _filtro_estados(C.ESTADO, (C_BORRADOR, C_LISTO))):
+            if (N.leer(pag, C.CUENTA) or "") in self.cfg.copy_automatico and not N.leer(pag, C.MODO_COPY):
+                self._escribir(pag["id"], {C.MODO_COPY: N.opcion(MODO_CREAR)})
 
     def _crear_fila(self, c: Contenido, red: str) -> None:
         via = self.cfg.destino(c.cuenta, red).via

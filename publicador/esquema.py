@@ -13,6 +13,7 @@ class C:
     HASHTAGS = "Hashtags"
     TITULO_YT = "Título YouTube"  # opcional (YouTube no se usa); `verificar` no la exige
     FORMATO = "Formato"           # opcional: ayuda visual (Video/Foto/Carrusel/Texto); el motor solo lee "Story"
+    MODO_COPY = "Modo de copy"    # opcional: "Crear copy" (lo escribe Claude) o "Copy propio"
     COLAB_IG = "Colaboradores IG"
     RESULTADO = "Resultado"
     ERROR = "Error"

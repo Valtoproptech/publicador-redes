@@ -5,6 +5,9 @@
   guardar-secreto NOMBRE        guarda un token (te lo pide sin mostrarlo)
   conectar-google NOMBRE --para drive|youtube   abre el navegador para autorizar
   conectar-tiktok NOMBRE        abre el navegador para autorizar una cuenta de TikTok
+  copys-pendientes              videos que esperan copy automático (los escribe Claude desde la Mac)
+  descargar-video ID CARPETA    baja un video de Drive (para que Claude lo vea)
+  guardar-copy PAGINA --copy ARCHIVO --hashtags "#a #b"   escribe el copy en Notion
   descubrir-meta                lista tus páginas de Facebook e Instagram para config.toml
   subir-a-github                cifra los tokens y los sube, junto con config.toml, a GitHub
 """
@@ -22,7 +25,7 @@ from pathlib import Path
 from . import secretos as S
 from .config import cargar
 
-OPCIONALES = {"TITULO_YT", "FORMATO"}  # columnas que pueden no existir en Notion
+OPCIONALES = {"TITULO_YT", "FORMATO", "MODO_COPY"}  # columnas que pueden no existir en Notion
 
 
 def _notion_y_drive(sec):
@@ -88,12 +91,40 @@ def verificar(args) -> int:
     chequeo("Notion · Contenidos", lambda: base(cfg.notion_contenidos, C))
     chequeo("Notion · Publicaciones", lambda: base(cfg.notion_publicaciones, P))
     chequeo("Google Drive", drive.cuenta)
+    for cuenta, skill in cfg.copy_automatico.items():
+        chequeo(f"{cuenta} · copy automático", lambda s=skill: (Path("skills") / s / "SKILL.md").stat() and f"skill {s}")
     crear = fabrica(cfg, sec)
     for cuenta, redes in cfg.cuentas.items():
         for red, d in redes.items():
             chequeo(f"{cuenta} · {red} ({d.via})", lambda c=cuenta, r=red: crear(c, r).comprobar())
     print("\nTodo listo." if not fallos else f"\n{fallos} problema(s). Revisa los ❌ de arriba.")
     return 1 if fallos else 0
+
+
+def copys_pendientes(args) -> int:
+    """Lista en JSON los videos que esperan su copy automático (lo usa la tarea programada de Claude)."""
+    import json
+    from .copys import pendientes
+    cfg = cargar()
+    notion, _ = _notion_y_drive(S.crear())
+    print(json.dumps(pendientes(notion, cfg), ensure_ascii=False, indent=1))
+    return 0
+
+
+def descargar_video(args) -> int:
+    notion, drive = _notion_y_drive(S.crear())
+    carpeta = Path(args.carpeta); carpeta.mkdir(parents=True, exist_ok=True)
+    ruta, _ = drive.descargar(args.drive_id, carpeta)
+    print(ruta)
+    return 0
+
+
+def guardar_copy(args) -> int:
+    from .copys import guardar
+    notion, _ = _notion_y_drive(S.crear())
+    guardar(notion, args.pagina_id, Path(args.copy).read_text(encoding="utf-8"), args.hashtags)
+    print("Copy guardado en Notion.")
+    return 0
 
 
 def guardar_secreto(args) -> int:
@@ -199,6 +230,12 @@ def main(argv=None) -> int:
     t = sub.add_parser("conectar-tiktok")
     t.add_argument("nombre", help="ej. tiktok-bambu")
     t.set_defaults(fn=conectar_tiktok)
+    sub.add_parser("copys-pendientes").set_defaults(fn=copys_pendientes)
+    d = sub.add_parser("descargar-video"); d.add_argument("drive_id"); d.add_argument("carpeta"); d.set_defaults(fn=descargar_video)
+    k = sub.add_parser("guardar-copy")
+    k.add_argument("pagina_id"); k.add_argument("--copy", required=True, help="archivo de texto con el copy")
+    k.add_argument("--hashtags", default="")
+    k.set_defaults(fn=guardar_copy)
     m = sub.add_parser("descubrir-meta"); m.add_argument("secreto", nargs="?", default="meta-valto"); m.set_defaults(fn=descubrir_meta)
     s = sub.add_parser("subir-a-github")
     s.add_argument("--forzar", action="store_true", help="sube también los tokens de TikTok aunque ya existan")

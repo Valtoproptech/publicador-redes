@@ -231,6 +231,10 @@ LIMITES_FOTO = {
 
 # ---------------------------------------------------------------- Stories
 
+# Columna "Modo de copy". En las cuentas con copy automático, vacío equivale a "Crear copy".
+MODO_CREAR = "Crear copy"
+MODO_PROPIO = "Copy propio"
+
 FORMATO_STORY = "Story"                   # valor de la columna "Formato" que convierte el contenido en Stories
 REDES_STORY = ("Instagram", "Facebook")   # TikTok y YouTube no tienen Stories por API
 MAX_STORIES = 10                          # por contenido (una carpeta = varias Stories seguidas)
