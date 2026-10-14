@@ -16,6 +16,9 @@ from ..imagenes import Foto
 from ..reglas import P_PUBLICADO
 from .base import ESPERAR, PREFIJO_STORY, REINTENTAR, Adaptador, Resultado, Trabajo, publicar_en_orden
 
+ENVIOS_SUBIDA = 4         # envíos del archivo a un mismo contenedor antes de abrir otro
+CONTENEDORES_SUBIDA = 3   # contenedores antes de rendirse (el error queda como transitorio: se reintenta luego)
+
 
 class Instagram(Adaptador):
     def __init__(self, token: str, ig_user_id: str, version: str, sesion=None, dormir=time.sleep):
@@ -44,15 +47,49 @@ class Instagram(Adaptador):
         return self._resultado(self._publicar_contenedor(contenedor))
 
     def _subir_video(self, datos: dict, video, guardar_id) -> str:
-        """Crea el contenedor resumable, guarda su ID al instante y sube los bytes del archivo."""
-        r = llamar(self.s, "POST", f"{self.g}/{self.ig}/media", data=datos, contexto="Instagram: crear contenedor").json()
-        contenedor = r["id"]
-        guardar_id(contenedor)
-        uri = r.get("uri") or f"https://rupload.facebook.com/ig-api-upload/{self.version}/{contenedor}"
-        with open(video.ruta, "rb") as f:
-            llamar(self.s, "POST", uri, data=f, contexto="Instagram: subir video",
-                   headers={"offset": "0", "file_size": str(video.ruta.stat().st_size)})
-        return contenedor
+        """Crea el contenedor resumable, guarda su ID al instante y sube los bytes del archivo.
+
+        rupload a veces recibe el archivo entero, lo procesa ~30 s y lo pierde (HTTP 400 ProcessingFailedError
+        "retriable": false, "File not found" en video_status). Pese a lo que dice, reenviarlo al MISMO contenedor
+        suele funcionar. Si la subida falla, el estado del contenedor decide: terminada → seguimos; cortada a
+        medias → se reanuda desde el byte que llegó; si no → se reenvía entero. Tras varios fallos, contenedor
+        nuevo. Es seguro: nada se publica hasta media_publish, y los contenedores abandonados caducan solos."""
+        error = None
+        for _ in range(CONTENEDORES_SUBIDA):
+            r = llamar(self.s, "POST", f"{self.g}/{self.ig}/media", data=datos,
+                       contexto="Instagram: crear contenedor").json()
+            contenedor = r["id"]
+            guardar_id(contenedor)
+            uri = r.get("uri") or f"https://rupload.facebook.com/ig-api-upload/{self.version}/{contenedor}"
+            error = self._enviar_bytes(contenedor, uri, video.ruta)
+            if error is None:
+                return contenedor
+        raise ErrorTransitorio(f"Instagram no pudo recibir el video tras {CONTENEDORES_SUBIDA * ENVIOS_SUBIDA} "
+                               f"intentos (falla de su servidor, no del archivo). Último error: {error}")
+
+    def _enviar_bytes(self, contenedor: str, uri: str, ruta) -> str | None:
+        """Sube el archivo al contenedor, reanudando o reenviando si falla. None = subido; texto = se rindió."""
+        tam = ruta.stat().st_size
+        desde = 0
+        for _ in range(ENVIOS_SUBIDA):
+            try:
+                with open(ruta, "rb") as f:
+                    f.seek(desde)
+                    llamar(self.s, "POST", uri, data=f, contexto="Instagram: subir video",
+                           headers={"offset": str(desde), "file_size": str(tam)})
+                return None
+            except (ErrorPermanente, ErrorTransitorio) as e:
+                error = str(e)
+            fase = self._get(contenedor, fields="video_status").get("video_status", {}).get("uploading_phase", {})
+            if fase.get("status") == "complete":
+                return None   # llegó entero aunque se perdió la respuesta
+            detalle = "; ".join(x.get("message", "") for x in fase.get("errors", []))
+            if detalle:
+                error = f"{error} ({detalle})"
+            # cortada a medias: seguimos desde el byte que llegó; perdida ("error"): se reenvía entera
+            desde = int(fase.get("bytes_transferred") or 0) if fase.get("status") != "error" else 0
+            self.dormir(5)
+        return error
 
     def _publicar_contenedor(self, contenedor: str) -> str:
         return llamar(self.s, "POST", f"{self.g}/{self.ig}/media_publish", final=True, contexto="Instagram: publicar",
@@ -142,11 +179,13 @@ class Instagram(Adaptador):
             return REINTENTAR  # el corte fue antes de crear el contenedor: no hay nada en Instagram
         if t.id_subida.startswith(PREFIJO_STORY):
             return self._recuperar_story(t.id_subida.removeprefix(PREFIJO_STORY).split(","))
-        codigo = self._get(t.id_subida, fields="status_code").get("status_code")
+        estado = self._get(t.id_subida, fields="status_code,video_status")
+        codigo = estado.get("status_code")
         if codigo == "PUBLISHED":
             return self._resultado(self._buscar_media(t), "Recuperado tras una interrupción.")
-        if codigo == "IN_PROGRESS":
-            return ESPERAR
+        subida = estado.get("video_status", {}).get("uploading_phase", {}).get("status")
+        if codigo == "IN_PROGRESS" and subida not in ("error", "not_started"):
+            return ESPERAR   # (con la subida perdida o sin empezar queda IN_PROGRESS para siempre: no se publicará)
         return REINTENTAR  # FINISHED sin publicar, ERROR o EXPIRED: no está publicado
 
     def _recuperar_story(self, contenedores: list[str]) -> Resultado | str:

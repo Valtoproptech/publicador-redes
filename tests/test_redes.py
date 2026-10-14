@@ -7,9 +7,9 @@ from pathlib import Path
 import requests
 
 from publicador.config import Destino
-from publicador.errores import ErrorPermanente, ResultadoIncierto
+from publicador.errores import ErrorPermanente, ErrorTransitorio, ResultadoIncierto
 from publicador.media import ArchivoPreparado
-from publicador.redes.base import REINTENTAR, Trabajo
+from publicador.redes.base import ESPERAR, REINTENTAR, Trabajo
 from publicador.redes.facebook import Facebook
 from publicador.redes.instagram import Instagram
 from publicador.redes.tiktok import TikTok, plan_trozos
@@ -36,7 +36,7 @@ class SesionFalsa:
         for (m, frag), resp in self.reglas.items():
             if m == metodo and frag in url:
                 if isinstance(resp, list):
-                    return resp.pop(0) if len(resp) > 1 else resp[0]
+                    resp = resp.pop(0) if len(resp) > 1 else resp[0]
                 if isinstance(resp, Exception):
                     raise resp
                 return resp
@@ -102,6 +102,76 @@ class InstagramTest(unittest.TestCase):
         with self.assertRaisesRegex(ErrorPermanente, "formato"):
             ig.publicar(T, archivo(), None, lambda: None, lambda x: None)
 
+    PERDIDO = Resp(400, {"debug_info": {"retriable": False, "type": "ProcessingFailedError",
+                                        "message": "Request processing failed"}})
+    MUERTO = Resp(200, {"video_status": {"uploading_phase": {"status": "error", "bytes_transferred": 0, "errors": [
+        {"code": 1363008, "message": "OIL Error[FILE_NOT_FOUND: 6]: File not found."}]}}})
+
+    def test_video_perdido_por_instagram_se_reenvia_al_mismo_contenedor(self):
+        ig = self.ig({
+            ("POST", "/IG1/media_publish"): Resp(200, {"id": "M1"}),
+            ("POST", "/IG1/media"): Resp(200, {"id": "C1", "uri": "https://rupload.facebook.com/ig-api-upload/v25.0/C1"}),
+            ("POST", "rupload"): [self.PERDIDO, Resp(200, {"success": True})],
+            ("GET", "/C1"): [self.MUERTO, Resp(200, {"status_code": "FINISHED"})],
+            ("GET", "/M1"): Resp(200, {"permalink": "https://ig/p"}),
+        })
+        ids = []
+        r = ig.publicar(T, archivo(), None, lambda: None, ids.append)
+        self.assertEqual((r.estado, r.id_publicacion), ("Publicado", "M1"))
+        self.assertEqual(ids, ["C1"])
+        subidas = [c[2]["headers"]["offset"] for c in self.s.llamadas if "rupload" in c[1]]
+        self.assertEqual(subidas, ["0", "0"])                # reenviado entero, sin crear otro contenedor
+
+    def test_si_el_contenedor_no_recibe_el_video_se_abre_otro(self):
+        ig = self.ig({
+            ("POST", "/IG1/media_publish"): Resp(200, {"id": "M1"}),
+            ("POST", "/IG1/media"): [Resp(200, {"id": "C1", "uri": "https://rupload.facebook.com/ig-api-upload/v25.0/C1"}),
+                                     Resp(200, {"id": "C2", "uri": "https://rupload.facebook.com/ig-api-upload/v25.0/C2"})],
+            ("POST", "/C1"): self.PERDIDO,
+            ("POST", "/C2"): Resp(200, {"success": True}),
+            ("GET", "/C1"): self.MUERTO,
+            ("GET", "/C2"): Resp(200, {"status_code": "FINISHED"}),
+            ("GET", "/M1"): Resp(200, {"permalink": "https://ig/p"}),
+        })
+        ids = []
+        r = ig.publicar(T, archivo(), None, lambda: None, ids.append)
+        self.assertEqual((r.estado, r.id_publicacion), ("Publicado", "M1"))
+        self.assertEqual(ids, ["C1", "C2"])                  # el ID guardado es siempre el contenedor vivo
+        publicar = [c for c in self.s.llamadas if c[1].endswith("media_publish")]
+        self.assertEqual([c[2]["data"]["creation_id"] for c in publicar], ["C2"])
+
+    def test_subida_cortada_se_reanuda_en_el_mismo_contenedor(self):
+        ig = self.ig({
+            ("POST", "/IG1/media"): Resp(200, {"id": "C1", "uri": "https://rupload.facebook.com/ig-api-upload/v25.0/C1"}),
+            ("POST", "rupload"): [requests.ConnectionError(), Resp(200, {"success": True})],
+            ("GET", "/C1"): Resp(200, {"video_status": {"uploading_phase": {"status": "in_progress", "bytes_transferred": 400}}}),
+        })
+        self.assertEqual(ig._subir_video({}, archivo(), lambda c: None), "C1")
+        subidas = [c[2]["headers"] for c in self.s.llamadas if "rupload" in c[1]]
+        self.assertEqual([(h["offset"], h["file_size"]) for h in subidas], [("0", "1000"), ("400", "1000")])
+        self.assertEqual(len([c for c in self.s.llamadas if c[1].endswith("/IG1/media")]), 1)
+
+    def test_respuesta_perdida_con_video_completo_no_se_reenvia(self):
+        ig = self.ig({
+            ("POST", "/IG1/media"): Resp(200, {"id": "C1"}),
+            ("POST", "rupload"): requests.Timeout(),
+            ("GET", "/C1"): Resp(200, {"video_status": {"uploading_phase": {"status": "complete", "bytes_transferred": 1000}}}),
+        })
+        self.assertEqual(ig._subir_video({}, archivo(), lambda c: None), "C1")
+        self.assertEqual(len([c for c in self.s.llamadas if "rupload" in c[1]]), 1)
+
+    def test_si_instagram_pierde_el_video_siempre_es_transitorio_y_no_publica(self):
+        ig = self.ig({
+            ("POST", "/IG1/media_publish"): AssertionError("no debe publicar"),
+            ("POST", "/IG1/media"): Resp(200, {"id": "C1"}),
+            ("POST", "rupload"): self.PERDIDO,
+            ("GET", "/C1"): self.MUERTO,
+        })
+        with self.assertRaisesRegex(ErrorTransitorio, "File not found"):
+            ig.publicar(T, archivo(), None, lambda: None, lambda x: None)
+        self.assertEqual(len([c for c in self.s.llamadas if c[1].endswith("/IG1/media")]), 3)
+        self.assertEqual(len([c for c in self.s.llamadas if "rupload" in c[1]]), 12)
+
     def test_recuperar(self):
         ig = self.ig({("GET", "/C9"): Resp(200, {"status_code": "FINISHED"})})
         t = Trabajo(**{**T.__dict__, "id_subida": "C9"})
@@ -111,6 +181,14 @@ class InstagramTest(unittest.TestCase):
                       ("GET", "/M9"): Resp(200, {"permalink": "https://ig/p"})})
         r = ig.recuperar(t)
         self.assertEqual((r.estado, r.id_publicacion), ("Publicado", "M9"))
+
+    def test_recuperar_contenedor_con_la_subida_perdida_reintenta(self):
+        t = Trabajo(**{**T.__dict__, "id_subida": "C9"})
+        ig = self.ig({("GET", "/C9"): Resp(200, {"status_code": "IN_PROGRESS", **self.MUERTO.json()})})
+        self.assertEqual(ig.recuperar(t), REINTENTAR)
+        ig = self.ig({("GET", "/C9"): Resp(200, {"status_code": "IN_PROGRESS", "video_status": {
+            "uploading_phase": {"status": "complete"}, "processing_phase": {"status": "in_progress"}}})})
+        self.assertEqual(ig.recuperar(t), ESPERAR)
 
 
 class FacebookTest(unittest.TestCase):
