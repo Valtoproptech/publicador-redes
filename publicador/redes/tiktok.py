@@ -92,14 +92,45 @@ class TikTok(Adaptador):
         publish_id = datos["publish_id"]
         guardar_id(publish_id)
         tipo = "video/quicktime" if video.ruta.suffix.lower() == ".mov" else "video/mp4"
+        completo = False
         with open(video.ruta, "rb") as f:
             for i in range(cantidad):
                 inicio = i * trozo
                 fin = tamano - 1 if i == cantidad - 1 else inicio + trozo - 1
                 parte = f.read(fin - inicio + 1)
-                llamar(self.s, "PUT", datos["upload_url"], data=parte, contexto=f"TikTok: subir parte {i + 1}/{cantidad}",
-                       headers={"Content-Type": tipo, "Content-Range": f"bytes {inicio}-{fin}/{tamano}"})
+                completo = self._subir_trozo(datos["upload_url"], publish_id, parte, inicio, fin, tamano, tipo,
+                                             f"TikTok: subir parte {i + 1}/{cantidad}")
+        if not completo:
+            # Sin el "201 Created" TikTok no confirma que tiene el video entero: un borrador así sale cortado.
+            raise ErrorTransitorio("TikTok no confirmó que recibió el video completo; se subirá de nuevo.")
         return self._seguir(publish_id)
+
+    def _subir_trozo(self, url: str, publish_id: str, parte: bytes, inicio: int, fin: int, tamano: int,
+                     tipo: str, contexto: str, intentos: int = 3) -> bool:
+        """Sube un trozo; True si TikTok confirma que ya tiene el video entero (201).
+
+        Si la conexión se corta, reintenta ESE trozo en la misma subida (como pide TikTok) en vez de
+        abandonarla a medias: una subida abandonada puede terminar como borrador cortado."""
+        for intento in range(1, intentos + 1):
+            try:
+                r = llamar(self.s, "PUT", url, data=parte, contexto=contexto,
+                           headers={"Content-Type": tipo, "Content-Range": f"bytes {inicio}-{fin}/{tamano}"})
+                return r.status_code == 201
+            except ErrorTransitorio:
+                if intento == intentos:
+                    raise
+                self.dormir(10 * intento)
+                recibidos = self._recibidos(publish_id)
+                if recibidos is not None and recibidos > fin:   # el trozo llegó; solo se perdió la respuesta
+                    return recibidos >= tamano
+        return False
+
+    def _recibidos(self, publish_id: str) -> int | None:
+        try:
+            d = self._post("/post/publish/status/fetch/", {"publish_id": publish_id}, "TikTok: estado")
+        except (ErrorTransitorio, ErrorPermanente):
+            return None
+        return d.get("uploaded_bytes")
 
     def _estado(self, publish_id: str) -> Resultado | None:
         d = self._post("/post/publish/status/fetch/", {"publish_id": publish_id}, "TikTok: estado")

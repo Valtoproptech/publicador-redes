@@ -296,6 +296,35 @@ class TikTokTest(unittest.TestCase):
         with self.assertRaisesRegex(ErrorPermanente, "5 borradores"):
             tt.publicar(Trabajo(**{**T.__dict__, "red": "TikTok"}), archivo(), None, lambda: None, lambda x: None)
 
+    def _tt(self, reglas):
+        s = SesionFalsa({("POST", "/inbox/video/init/"): Resp(200, {"data": {"publish_id": "P1", "upload_url": "https://up/1"}, "error": {"code": "ok"}}),
+                         **reglas})
+        cred = self.CRED.replace('"expira": 0', '"expira": 9999999999')
+        return s, TikTok("tiktok-bambu", SecretosMemoria(**{"tiktok-bambu": cred}), sesion=s, dormir=lambda x: None)
+
+    def test_reintenta_el_trozo_cortado_en_la_misma_subida(self):
+        s, tt = self._tt({("PUT", "https://up/1"): [requests.ConnectionError(), Resp(201, {})],
+                          ("POST", "/status/fetch/"): [Resp(200, {"data": {"status": "PROCESSING_UPLOAD", "uploaded_bytes": 0}, "error": {"code": "ok"}}),
+                                                       Resp(200, {"data": {"status": "SEND_TO_USER_INBOX"}, "error": {"code": "ok"}})]})
+        r = tt.publicar(Trabajo(**{**T.__dict__, "red": "TikTok"}), archivo(), None, lambda: None, lambda x: None)
+        self.assertEqual(r.estado, "En borradores")
+        self.assertEqual(len([c for c in s.llamadas if c[1].endswith("/inbox/video/init/")]), 1)   # misma subida
+        self.assertEqual(len([c for c in s.llamadas if c[0] == "PUT"]), 2)
+
+    def test_trozo_recibido_aunque_se_perdio_la_respuesta(self):
+        s, tt = self._tt({("PUT", "https://up/1"): [requests.ConnectionError()],
+                          ("POST", "/status/fetch/"): [Resp(200, {"data": {"status": "PROCESSING_UPLOAD", "uploaded_bytes": 1000}, "error": {"code": "ok"}}),
+                                                       Resp(200, {"data": {"status": "SEND_TO_USER_INBOX"}, "error": {"code": "ok"}})]})
+        r = tt.publicar(Trabajo(**{**T.__dict__, "red": "TikTok"}), archivo(), None, lambda: None, lambda x: None)
+        self.assertEqual(r.estado, "En borradores")
+        self.assertEqual(len([c for c in s.llamadas if c[0] == "PUT"]), 1)   # no se reenvía
+
+    def test_sin_201_no_se_da_por_subido(self):
+        s, tt = self._tt({("PUT", "https://up/1"): Resp(206, {})})
+        with self.assertRaisesRegex(ErrorTransitorio, "video completo"):
+            tt.publicar(Trabajo(**{**T.__dict__, "red": "TikTok"}), archivo(), None, lambda: None, lambda x: None)
+        self.assertFalse([c for c in s.llamadas if "/status/fetch/" in c[1]])
+
 
 class SecretosTest(unittest.TestCase):
     def test_cifrado_ida_y_vuelta(self):
