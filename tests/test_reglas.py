@@ -99,7 +99,20 @@ class Planificacion(unittest.TestCase):
 
     def test_fecha_pasada(self):
         self.assertEqual(plan(ahora=T0 + timedelta(minutes=30)), "publicar_a_la_hora")
-        self.assertEqual(plan(ahora=T0 + timedelta(hours=3)), "vencido")
+        self.assertEqual(plan(ahora=T0 + timedelta(hours=3)), "publicar_a_la_hora")
+        self.assertEqual(plan(ahora=T0 + timedelta(hours=25)), "vencido")
+
+    def test_story_pasada_tiene_limite_mas_corto(self):
+        self.assertEqual(plan(story=True, ahora=T0 + timedelta(hours=4)), "publicar_a_la_hora")
+        self.assertEqual(plan(story=True, ahora=T0 + timedelta(hours=6)), "vencido")
+
+    def test_vencido_dice_el_limite(self):
+        p = planificar(red="Instagram", via="nativo", estado="En cola", cuando=T0, ahora=T0 + timedelta(hours=25),
+                       anticipacion=ANT)
+        self.assertIn("límite es 24 h", p.motivo)
+        p = planificar(red="Instagram", via="nativo", estado="En cola", cuando=T0, ahora=T0 + timedelta(hours=6),
+                       anticipacion=ANT, story=True)
+        self.assertIn("límite para Stories es 5 h", p.motivo)
 
     def test_programado_se_verifica_despues(self):
         self.assertEqual(plan(estado="Programado", ahora=T0 + timedelta(minutes=1)), "esperar")

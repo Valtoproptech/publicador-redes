@@ -249,7 +249,7 @@ class Errores(Base):
 
     def test_fecha_muy_pasada(self):
         self.contenido()
-        self.reloj.t = T0 + timedelta(hours=5)
+        self.reloj.t = T0 + timedelta(hours=25)
         self.correr()
         fila = self.filas()["Instagram"]["id"]
         self.assertEqual(self.estado(fila), "Error")

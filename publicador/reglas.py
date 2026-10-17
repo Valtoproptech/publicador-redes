@@ -38,7 +38,9 @@ P_ATENCION = (P_ERROR, P_REVISION, P_BORRADORES)
 # Tiempos de planificación.
 MARGEN_NATIVO = timedelta(minutes=15)     # por debajo de esto se publica "a la hora" en vez de programar
 MAX_NATIVO = {"Facebook": timedelta(days=28), "YouTube": timedelta(days=3650)}
-MAX_RETRASO = timedelta(hours=2)          # si la fecha ya pasó hace más, no publicamos sin permiso
+MAX_RETRASO = timedelta(hours=2)          # programada en la plataforma o procesando hace más: algo se trabó
+MAX_RETRASO_COLA = timedelta(hours=24)    # en cola con la fecha pasada hace más: no se publica (ver D17)
+MAX_RETRASO_COLA_STORY = timedelta(hours=5)   # igual para Stories: pasado ese tiempo pierden sentido
 ESPERA_VERIFICACION = timedelta(minutes=5)
 BLOQUEO_VENCIDO = timedelta(minutes=15)
 MAX_INTENTOS = 3
@@ -314,8 +316,10 @@ def planificar(*, red: str, via: str, estado: str, cuando: datetime, ahora: date
         return Plan("esperar", "programada en la plataforma")
     if estado != P_EN_COLA:
         return Plan("esperar", f"estado {estado}")
-    if faltan < -MAX_RETRASO:
-        return Plan("vencido", f"la fecha pasó hace {_humano(-faltan)}")
+    limite = MAX_RETRASO_COLA_STORY if story else MAX_RETRASO_COLA
+    if faltan < -limite:
+        return Plan("vencido", f"la fecha pasó hace {_humano(-faltan)} y el límite "
+                               f"{'para Stories ' if story else ''}es {_humano(limite)}")
     nativo = via == "nativo" and red in MAX_NATIVO and not story   # ninguna red programa Stories por API
     if nativo and MARGEN_NATIVO < faltan <= MAX_NATIVO[red]:
         return Plan("programar_nativo")
